@@ -310,13 +310,14 @@ done_list:
 		wsi->af = (uint8_t)a->af;
 
 #ifdef LWS_WITH_UNIX_SOCK
-		if (LWS_UNIX_SOCK_ENABLED(a->vhost))
+		if (LWS_UNIX_SOCK_ENABLED(a->vhost)) {
 			wsi->unix_skt = 1;
+		} else
 #endif
-
+		{
 		a->vhost->listen_port = is;
 		lwsl_debug("%s: lws_socket_bind says %d\n", __func__, is);
-
+		}
 		wsi->desc.sockfd = sockfd;
 		wsi->a.protocol = a->vhost->protocols;
 		lws_vhost_bind_wsi(a->vhost, wsi);
@@ -1660,8 +1661,15 @@ lws_http_action(struct lws *wsi)
 	    lws_hdr_copy(wsi, content_length_str,
 			 sizeof(content_length_str) - 1,
 			 WSI_TOKEN_HTTP_CONTENT_LENGTH) > 0) {
+		long long cl_val = atoll(content_length_str);
+		if (cl_val < 0) {
+			lwsl_warn("%s: rejected negative Content-Length: %s\n",
+				  __func__, content_length_str);
+			lws_return_http_status(wsi, HTTP_STATUS_BAD_REQUEST, NULL);
+			return 1;
+		}
 		wsi->http.rx_content_remain = wsi->http.rx_content_length =
-				(lws_filepos_t)atoll(content_length_str);
+				(lws_filepos_t)cl_val;
 		if (!wsi->http.rx_content_length) {
 			wsi->http.content_length_explicitly_zero = 1;
 			lwsl_debug("%s: explicit 0 content-length\n", __func__);
@@ -2020,7 +2028,8 @@ deal_body:
 		return 0;
 	}
 
-	if (wsi->http.rx_content_length <= 0)
+	if (wsi->http.rx_content_length == 0 ||
+	    wsi->http.rx_content_length == LWS_ILLEGAL_HTTP_CONTENT_LEN)
 		return 0;
 
 	if (lwsi_state(wsi) != LRS_DISCARD_BODY) {
