@@ -524,7 +524,7 @@ i2:
 						goto reject_callback;
 					pst->ppos = st->p;
 					ctx->path[pst->ppos] = '\0';
-					if (ctx->ipos)
+					if (ctx->ipos) /* cov */
 						ctx->ipos--;
 					lecp_check_path_match(ctx);
 					lwcp_completed(ctx, 0);
@@ -674,10 +674,21 @@ push_m:
 		 * We're collecting int / float pieces
 		 */
 		case LECP_COLLECT:
-			if (ctx->be)
-				*ctx->collect_tgt++ = c;
-			else
-				*ctx->collect_tgt-- = c;
+			if (ctx->be) {
+
+				if (ctx->collect_tgt + 1 >= &ctx->item.opcode)
+					*ctx->collect_tgt = c;
+				else
+					*ctx->collect_tgt++ = c;
+
+			} else {
+
+				if (ctx->collect_tgt <= (uint8_t *)&ctx->item.u)
+					*ctx->collect_tgt = c;
+				else
+					*ctx->collect_tgt-- = c;
+
+			}
 
 			if (--st->collect_rem)
 				break;
@@ -986,7 +997,7 @@ format_scan(const char *fmt)
 		}
 
 		if (numeric) {
-			if (*fmt >= '0' && *fmt <= '9')
+			while (*fmt >= '0' && *fmt <= '9')
 				fmt++;
 			numeric = 0;
 			if (*fmt != '(')
@@ -1120,6 +1131,7 @@ pop:
 
 			return count[0];
 
+		case '-':
 		case '0':
 		case '1':
 		case '2':
@@ -1206,7 +1218,8 @@ lws_lec_int(lws_lec_pctx_t *ctx, uint8_t opcode, uint8_t indet, uint64_t num)
 
 	ctx->scratch[ctx->scratch_len++] = (uint8_t)(opcode | hint);
 	n = 1u << (hint - LWS_CBOR_1);
-	while (n--) {
+	while (n) {
+		n--; /* cov */
 		ctx->scratch[ctx->scratch_len++] = (uint8_t)(num >> 56);
 		num <<= 8;
 	}
@@ -1243,7 +1256,7 @@ enum lws_lec_pctx_ret
 lws_lec_vsprintf(lws_lec_pctx_t *ctx, const char *fmt, va_list args)
 {
 	size_t fl = strlen(fmt);
-	uint64_t u64;
+	uint64_t u64 = 0;
 	int64_t i64;
 #if defined(LWS_WITH_CBOR_FLOAT)
 	double dbl;
@@ -1451,6 +1464,9 @@ lws_lec_vsprintf(lws_lec_pctx_t *ctx, const char *fmt, va_list args)
 					i64 = (int64_t)va_arg(args, long long);
 					ctx->vaa[ctx->vaa_pos++] = NATTYPE_LONG_LONG;
 					break;
+				default:
+					i64 = 0;
+					break;
 				}
 				if (i64 < 0)
 					lws_lec_int(ctx,
@@ -1474,6 +1490,9 @@ lws_lec_vsprintf(lws_lec_pctx_t *ctx, const char *fmt, va_list args)
 				case 2:
 					u64 = (uint64_t)va_arg(args, unsigned long long);
 					ctx->vaa[ctx->vaa_pos++] = NATTYPE_LONG_LONG;
+					break;
+				default:
+					i64 = 0;
 					break;
 				}
 				lws_lec_int(ctx, LWS_CBOR_MAJTYP_UINT, 0, u64);
@@ -1518,6 +1537,9 @@ lws_lec_vsprintf(lws_lec_pctx_t *ctx, const char *fmt, va_list args)
 				case 2:
 					ctx->item.u.u64 = (uint64_t)va_arg(args, long long);
 					ctx->vaa[ctx->vaa_pos++] = NATTYPE_LONG_LONG;
+					break;
+				default:
+					i64 = 0;
 					break;
 				}
 				ctx->item.opcode = LWS_CBOR_MAJTYP_UINT;

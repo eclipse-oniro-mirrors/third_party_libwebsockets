@@ -94,13 +94,16 @@ const uint32_t ss_state_txn_validity[] = {
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_DISCONNECTED]		= (1 << LWSSSCS_CONNECTING) |
+					  (1 << LWSSSCS_CONNECTED) |
 					  (1 << LWSSSCS_TIMEOUT) |
 					  (1 << LWSSSCS_POLL) |
-					  (1 << LWSSSCS_DESTROYING),
+					  (1 << LWSSSCS_DESTROYING) |
+					  (1 << LWSSSCS_UNREACHABLE), /* sai-power talking to tasmota */
 
 	[LWSSSCS_UNREACHABLE]		= (1 << LWSSSCS_ALL_RETRIES_FAILED) |
 					  (1 << LWSSSCS_TIMEOUT) |
 					  (1 << LWSSSCS_POLL) |
+					  (1 << LWSSSCS_UNREACHABLE) |
 					  (1 << LWSSSCS_CONNECTING) |
 					  /* win conn failure > retry > succ */
 					  (1 << LWSSSCS_CONNECTED) |
@@ -120,6 +123,7 @@ const uint32_t ss_state_txn_validity[] = {
 					  (1 << LWSSSCS_QOS_NACK_LOCAL) |
 					  (1 << LWSSSCS_DISCONNECTED) |
 					  (1 << LWSSSCS_TIMEOUT) |
+					  (1 << LWSSSCS_CONNECTING) |
 					  (1 << LWSSSCS_POLL) | /* proxy retry */
 					  (1 << LWSSSCS_DESTROYING),
 
@@ -127,8 +131,11 @@ const uint32_t ss_state_txn_validity[] = {
 					  (1 << LWSSSCS_AUTH_FAILED) |
 					  (1 << LWSSSCS_CONNECTING) |
 					  (1 << LWSSSCS_CONNECTED) |
+					  (1 << LWSSSCS_QOS_ACK_REMOTE) |
+					  (1 << LWSSSCS_QOS_NACK_REMOTE) |
 					  (1 << LWSSSCS_TIMEOUT) |
 					  (1 << LWSSSCS_POLL) |
+					  (1 << LWSSSCS_ALL_RETRIES_FAILED) | /* via timeout in this state */
 					  (1 << LWSSSCS_DISCONNECTED) | /* proxy retry */
 					  (1 << LWSSSCS_DESTROYING),
 
@@ -140,11 +147,14 @@ const uint32_t ss_state_txn_validity[] = {
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_ALL_RETRIES_FAILED]	= (1 << LWSSSCS_CONNECTING) |
+					  (1 << LWSSSCS_POLL) |
 					  (1 << LWSSSCS_TIMEOUT) |
+					  (1 << LWSSSCS_UNREACHABLE) |
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_QOS_ACK_REMOTE]	= (1 << LWSSSCS_DISCONNECTED) |
 					  (1 << LWSSSCS_TIMEOUT) |
+					  (1 << LWSSSCS_CONNECTING) |
 #if defined(LWS_ROLE_MQTT)
 					  (1 << LWSSSCS_QOS_ACK_REMOTE) |
 					  (1 << LWSSSCS_QOS_NACK_REMOTE) |
@@ -179,9 +189,11 @@ const uint32_t ss_state_txn_validity[] = {
 
 	[LWSSSCS_SERVER_TXN]		= (1 << LWSSSCS_DISCONNECTED) |
 					  (1 << LWSSSCS_TIMEOUT) |
+					  (1 << LWSSSCS_SERVER_TXN) |
 					  (1 << LWSSSCS_DESTROYING),
 
-	[LWSSSCS_SERVER_UPGRADE]	= (1 << LWSSSCS_SERVER_TXN) |
+	[LWSSSCS_SERVER_UPGRADE]	= (1 << LWSSSCS_SERVER_UPGRADE) |
+                      (1 << LWSSSCS_SERVER_TXN) |
 					  (1 << LWSSSCS_TIMEOUT) |
 					  (1 << LWSSSCS_DISCONNECTED) |
 					  (1 << LWSSSCS_DESTROYING),
@@ -273,7 +285,9 @@ lws_conmon_ss_json(lws_ss_handle_t *h)
 		 * ask to forward it on the proxy link
 		 */
 
-		ss_proxy_onward_link_req_writeable(h);
+		h->conn_if_sspc_onw->txp_path.ops_onw->proxy_req_write(
+				h->conn_if_sspc_onw->txp_path.priv_onw);
+
 		return LWSSSSRET_OK;
 	}
 #endif
@@ -325,9 +339,9 @@ lws_ss_check_next_state(lws_lifecycle_t *lc, uint8_t *prevstate,
 
 	if (ss_state_txn_validity[*prevstate] & (1u << cs)) {
 
-		lwsl_notice("%s: %s: %s -> %s\n", __func__, lc->gutag,
-			    lws_ss_state_name((int)*prevstate),
-			    lws_ss_state_name((int)cs));
+		lwsl_debug("%s: %s: %s -> %s\n", __func__, lc->gutag,
+			    lws_ss_state_name(*prevstate),
+			    lws_ss_state_name(cs));
 
 		/* this is explicitly allowed, update old state to new */
 		*prevstate = (uint8_t)cs;
@@ -336,8 +350,8 @@ lws_ss_check_next_state(lws_lifecycle_t *lc, uint8_t *prevstate,
 	}
 
 	lwsl_err("%s: %s: transition from %s -> %s is illegal\n", __func__,
-		 lc->gutag, lws_ss_state_name((int)*prevstate),
-		 lws_ss_state_name((int)cs));
+		 lc->gutag, lws_ss_state_name(*prevstate),
+		 lws_ss_state_name(cs));
 
 	assert(0);
 
@@ -374,9 +388,9 @@ lws_ss_check_next_state_ss(lws_ss_handle_t *ss, uint8_t *prevstate,
 
 	if (ss_state_txn_validity[*prevstate] & (1u << cs)) {
 
-		lwsl_ss_notice(ss, "%s -> %s",
-			       lws_ss_state_name((int)*prevstate),
-			       lws_ss_state_name((int)cs));
+		lwsl_ss_debug(ss, "%s -> %s",
+			       lws_ss_state_name(*prevstate),
+			       lws_ss_state_name(cs));
 
 		/* this is explicitly allowed, update old state to new */
 		*prevstate = (uint8_t)cs;
@@ -385,8 +399,8 @@ lws_ss_check_next_state_ss(lws_ss_handle_t *ss, uint8_t *prevstate,
 	}
 
 	lwsl_ss_err(ss, "transition from %s -> %s is illegal",
-		    lws_ss_state_name((int)*prevstate),
-		    lws_ss_state_name((int)cs));
+		    lws_ss_state_name(*prevstate),
+		    lws_ss_state_name(cs));
 
 	assert(0);
 
@@ -394,7 +408,7 @@ lws_ss_check_next_state_ss(lws_ss_handle_t *ss, uint8_t *prevstate,
 }
 
 const char *
-lws_ss_state_name(int state)
+lws_ss_state_name(lws_ss_constate_t state)
 {
 	if (state >= LWSSSCS_USER_BASE)
 		return "user state";
@@ -418,18 +432,21 @@ lws_ss_event_helper(lws_ss_handle_t *h, lws_ss_constate_t cs)
 
 	if (cs == LWSSSCS_CONNECTED)
 		h->ss_dangling_connected = 1;
-	if (cs == LWSSSCS_DISCONNECTED)
+	if (cs == LWSSSCS_DISCONNECTED) {
 		h->ss_dangling_connected = 0;
 
-#if defined(LWS_WITH_SEQUENCER)
-	/*
-	 * A parent sequencer for the ss is optional, if we have one, keep it
-	 * informed of state changes on the ss connection
-	 */
-	if (h->seq && cs != LWSSSCS_DESTROYING)
-		lws_seq_queue_event(h->seq, LWSSEQ_SS_STATE_BASE + cs,
-				    (void *)h, NULL);
-#endif
+		h->subseq = 0;
+		h->txn_ok = 0;
+		h->txn_resp_set = 0;
+		h->txn_resp_pending = 0;
+		h->hanging_som = 0;
+		h->inside_msg = 0;
+		h->inside_connect = 0;
+		h->proxy_onward = 0;
+		h->wsi = NULL;
+		h->u.http.good_respcode = 0;
+		h->seqstate = SSSEQ_IDLE;
+	}
 
 	if (h->info.state) {
 		h->h_in_svc = h;
@@ -437,6 +454,7 @@ lws_ss_event_helper(lws_ss_handle_t *h, lws_ss_constate_t cs)
 			cs == LWSSSCS_UNREACHABLE &&
 			h->wsi && h->wsi->dns_reachability);
 		h->h_in_svc = NULL;
+
 #if defined(LWS_WITH_SERVER)
 		if ((h->info.flags & LWSSSINFLAGS_ACCEPTED) &&
 		    cs == LWSSSCS_DISCONNECTED)
@@ -640,15 +658,17 @@ lws_ss_smd_tx_cb(lws_sorted_usec_list_t *sul)
 	if (!h->info.tx)
 		return;
 
-	n = h->info.tx((h + 1), h->txord++, buf, &len, &flags);
+	n = h->info.tx(h + 1, h->txord++, buf, &len, &flags);
 	if (n)
 		/* nonzero return means don't want to send anything */
 		return;
 
-	// lwsl_notice("%s: (SS %p bound to _lws_smd creates message) tx len %d\n", __func__, h, (int)len);
-	// lwsl_hexdump_notice(buf, len);
-
-	assert(len >= LWS_SMD_SS_RX_HEADER_LEN);
+	if (len < LWS_SMD_SS_RX_HEADER_LEN) {
+		lwsl_ss_notice(h, "smd message undersize: tx len %d vs %d",
+				(int)len, (int)LWS_SMD_SS_RX_HEADER_LEN);
+		lwsl_hexdump_notice(buf, len);
+		return;
+	}
 	_class = (lws_smd_class_t)lws_ser_ru64be(buf);
 	p = lws_smd_msg_alloc(h->context, _class, len - LWS_SMD_SS_RX_HEADER_LEN);
 	if (!p) {
@@ -666,6 +686,41 @@ lws_ss_smd_tx_cb(lws_sorted_usec_list_t *sul)
 
 #endif
 
+#if defined(LWS_WITH_FILE_OPS)
+static void
+lws_ss_fops_sul_cb(lws_sorted_usec_list_t *sul)
+{
+	lws_ss_handle_t *h = lws_container_of(sul, lws_ss_handle_t, fops_sul);
+	lws_ss_state_return_t r = LWSSSSRET_DISCONNECT_ME;
+	lws_filepos_t amount;
+	uint8_t lump[1400];
+
+	amount = sizeof(lump);
+	if (lws_vfs_file_read(h->fop_fd, &amount, lump, sizeof(lump)))
+		goto disconn;
+
+	r = h->info.rx(h + 1, lump, (size_t)amount,
+			(!h->fop_fd->pos ? LWSSS_FLAG_SOM : 0) |
+			(h->fop_fd->pos == h->fop_fd->len ?
+					LWSSS_FLAG_EOM : 0));
+	if (!r) {
+		if (h->fop_fd->pos != h->fop_fd->len)
+			lws_sul_schedule(h->context, 0, &h->fops_sul,
+					 lws_ss_fops_sul_cb, 1);
+		return;
+	}
+
+disconn:
+	lws_vfs_file_close(&h->fop_fd);
+
+	if (lws_ss_event_helper(h, LWSSSCS_DISCONNECTED))
+		return;
+
+	if (r == LWSSSSRET_DESTROY_ME)
+		lws_ss_destroy(&h);
+}
+#endif
+
 lws_ss_state_return_t
 _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 {
@@ -676,7 +731,7 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 	union lws_ss_contemp ct;
 	lws_ss_state_return_t r;
 	int port, _port, tls;
-	char *path, ep[96];
+	char *path, ep[192];
 	lws_strexp_t exp;
 	struct lws *wsi;
 
@@ -688,12 +743,14 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 		return LWSSSSRET_OK;
 	}
 
+#if defined(LWS_WITH_SERVER)
 	/*
 	 * We are already bound to a sink?
 	 */
 
-//	if (h->h_sink)
-//		return 0;
+	if (h->sink_local_bind)
+		return 0;
+#endif
 
 	if (!is_retry)
 		h->retry = 0;
@@ -751,6 +808,39 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 	_prot = prot = NULL;
 	_ipath = ipath = "";
 	_ads = ads = ep;
+
+#if defined(LWS_WITH_FILE_OPS)
+	if (!strncmp(ep, "file://", 7)) {
+		lws_fop_flags_t fl = 0;
+		h->fop_fd = lws_vfs_file_open(h->context->fops, ep + 7, &fl);
+
+		/* we opened the file */
+
+		r = lws_ss_event_helper(h, LWSSSCS_CONNECTING);
+		if (r) {
+			lws_vfs_file_close(&h->fop_fd);
+			return r;
+		}
+
+		if (!h->fop_fd) {
+			lws_vfs_file_close(&h->fop_fd);
+			lwsl_ss_warn(h, "Unable to find %s", ep);
+			goto fail_out;
+		}
+
+		r = lws_ss_event_helper(h, LWSSSCS_CONNECTED);
+		if (r) {
+			lws_vfs_file_close(&h->fop_fd);
+			return r;
+		}
+
+		/* start issuing the file as rx next time around the event loop */
+		lws_sul_schedule(h->context, 0, &h->fops_sul,
+				 lws_ss_fops_sul_cb, 1);
+
+		return LWSSSSRET_OK;
+	}
+#endif
 
 	if (strchr(ep, ':') &&
 	    !lws_parse_uri(ep, &_prot, &_ads, &_port, &_ipath)) {
@@ -823,7 +913,6 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 	i.host			= i.address;
 	i.origin		= i.address;
 	i.opaque_user_data	= h;
-	i.seq			= h->seq;
 	i.retry_and_idle_policy	= h->policy->retry_bo;
 	i.sys_tls_client_cert	= h->policy->client_cert;
 
@@ -859,11 +948,6 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 
 	i.pwsi = &h->wsi;
 
-#if defined(LWS_WITH_SSPLUGINS)
-	if (h->policy->plugins[0] && h->policy->plugins[0]->munge)
-		h->policy->plugins[0]->munge(h, path, h->context->max_http_header_data);
-#endif
-
 	lwsl_info("%s: connecting %s, '%s' '%s' %s\n", __func__, i.method,
 			i.alpn, i.address, i.path);
 
@@ -898,6 +982,9 @@ _lws_ss_client_connect(lws_ss_handle_t *h, int is_retry, void *conn_if_sspc_onw)
 		if (h->pending_ret)
 			return h->pending_ret;
 
+#if defined(LWS_WITH_FILE_OPS)
+fail_out:
+#endif
 		if (h->prev_ss_state != LWSSSCS_UNREACHABLE &&
 		    h->prev_ss_state != LWSSSCS_ALL_RETRIES_FAILED) {
 			/*
@@ -931,6 +1018,67 @@ lws_ss_client_connect(lws_ss_handle_t *h)
 	return r;
 }
 
+int
+lws_ss_adopt_raw(struct lws_ss_handle *h, lws_sock_file_fd_type fd)
+{
+	const struct ss_pcols *ssp;
+	lws_ss_state_return_t r;
+    lws_adopt_desc_t desc;
+    struct lws *wsi;
+
+    if (!h->policy || !h->policy->protocol)
+		return 1;
+
+    ssp = ss_pcols[(int)h->policy->protocol];
+    if (!ssp)
+		return 1;
+
+	memset(&desc, 0, sizeof(desc));
+
+	desc.vh = lws_ss_get_vhost(h) ? lws_ss_get_vhost(h) :
+				lws_get_vhost_by_name(h->context, "_ss_default");
+	if (desc.vh == NULL)
+		return 1;
+	desc.vh_prot_name = ssp->protocol->name;
+	desc.type = LWS_ADOPT_RAW_FILE_DESC;
+	desc.fd = fd;
+	desc.opaque = h;
+
+	wsi = lws_adopt_descriptor_vhost_via_info(&desc);
+	if (!wsi) {
+		lwsl_ss_warn(h, "Failed to adopt pipe\n");
+		return 1;
+	}
+
+	lwsl_wsi_notice(wsi, "Adopted fd %d\n", fd.filefd);
+
+	h->wsi = wsi;
+	wsi->for_ss = 1;
+	h->txn_ok = 0;
+
+	r = lws_ss_event_helper(h, LWSSSCS_CONNECTING);
+	if (r)
+		goto bail;
+	r = lws_ss_event_helper(h, LWSSSCS_CONNECTED);
+	if (r)
+		goto bail;
+
+	if (lws_change_pollfd(wsi, 0, LWS_POLLIN))
+		lwsl_ss_warn(h, "Failed to set POLLIN\n");
+
+	return 0;
+
+bail:
+	r = lws_ss_event_helper(h, LWSSSCS_DISCONNECTED);
+	if (r)
+		goto bail;
+
+	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS,
+					   "ss adopt skt fail");
+
+	return 1;
+}
+
 /*
  * Public API
  */
@@ -942,12 +1090,15 @@ lws_ss_client_connect(lws_ss_handle_t *h)
 int
 lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 	      void *opaque_user_data, lws_ss_handle_t **ppss,
-	      struct lws_sequencer *seq_owner, const char **ppayload_fmt)
+	      void *reserved, const char **ppayload_fmt)
 {
 	struct lws_context_per_thread *pt = &context->pt[tsi];
 	const lws_ss_policy_t *pol;
 	lws_ss_state_return_t r;
 	lws_ss_metadata_t *smd;
+#if defined(LWS_WITH_SERVER)
+	lws_ss_sinks_t *sn;
+#endif
 	lws_ss_handle_t *h;
 	size_t size;
 	void **v;
@@ -992,8 +1143,9 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 	}
 #endif
 
-#if 0
+#if defined(LWS_WITH_SERVER)
 	if (ssi->flags & LWSSSINFLAGS_REGISTER_SINK) {
+
 		/*
 		 * This can register a secure streams sink as well as normal
 		 * secure streams connections.  If that's what's happening,
@@ -1011,12 +1163,20 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 
 			return 1;
 		}
-	} else {
 
-		if (!(pol->flags & LWSSSPOLF_LOCAL_SINK)) {
+		sn = lws_zalloc(sizeof(*sn), __func__);
+		if (!sn)
+			return 1;
 
-		}
-//		lws_dll2_foreach_safe(&pt->ss_owner, NULL, lws_ss_destroy_dll);
+		sn->info = *ssi;
+		sn->info.flags = (uint8_t)((sn->info.flags &
+						~(LWSSSINFLAGS_REGISTER_SINK)) |
+				LWSSSINFLAGS_ACCEPTED_SINK);
+		lws_dll2_add_tail(&sn->list, &context->sinks);
+
+		lwsl_cx_notice(context, "registered sink %s", ssi->streamtype);
+
+		return 0;
 	}
 #endif
 
@@ -1024,22 +1184,14 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 	 * We overallocate and point to things in the overallocation...
 	 *
 	 * 1) the user_alloc from the stream info
-	 * 2) network auth plugin instantiation data
-	 * 3) stream auth plugin instantiation data
-	 * 4) as many metadata pointer structs as the policy tells
-	 * 5) the streamtype name (length is not aligned)
+	 * 2) as many metadata pointer structs as the policy tells
+	 * 3) the streamtype name (length is not aligned)
 	 *
 	 * ... when we come to destroy it, just one free to do.
 	 */
 
 	size = sizeof(*h) + ssi->user_alloc +
 			(ssi->streamtype ? strlen(ssi->streamtype): 0) + 1;
-#if defined(LWS_WITH_SSPLUGINS)
-	if (pol->plugins[0])
-		size += pol->plugins[0]->alloc;
-	if (pol->plugins[1])
-		size += pol->plugins[1]->alloc;
-#endif
 	size += pol->metadata_count * sizeof(lws_ss_metadata_t);
 
 	h = lws_zalloc(size, __func__);
@@ -1048,15 +1200,23 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 
 	h->lc.log_cx = context->log_cx;
 
+	n = LWSLCG_WSI_SS_CLIENT;
+#if defined(LWS_WITH_SERVER)
+	if (pol->flags & LWSSSPOLF_LOCAL_SINK) {
+		if (ssi->flags & LWSSSINFLAGS_ACCEPTED_SINK)
+			n = LWSLCG_WSI_SSP_SINK;
+		else
+			n = LWSLCG_WSI_SSP_SOURCE;
+	}
+#endif
+
 	if (ssi->sss_protocol_version)
-		__lws_lc_tag(context, &context->lcg[LWSLCG_WSI_SS_CLIENT],
-			     &h->lc, "%s|v%u|%u",
+		__lws_lc_tag(context, &context->lcg[n], &h->lc, "%s|v%u|%u",
 			     ssi->streamtype ? ssi->streamtype : "nostreamtype",
 			     (unsigned int)ssi->sss_protocol_version,
 			     (unsigned int)ssi->client_pid);
 	else
-		__lws_lc_tag(context, &context->lcg[LWSLCG_WSI_SS_CLIENT],
-			     &h->lc, "%s",
+		__lws_lc_tag(context, &context->lcg[n], &h->lc, "%s",
 			     ssi->streamtype ? ssi->streamtype : "nostreamtype");
 
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
@@ -1068,11 +1228,72 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 	lws_fi_inherit_copy(&h->fic, &context->fic, "ss", ssi->streamtype);
 #endif
 
+#if defined(LWS_WITH_SERVER)
+	if (pol->flags & LWSSSPOLF_LOCAL_SINK) {
+
+		if ((ssi->flags & LWSSSINFLAGS_ACCEPTED_SINK) &&
+		    opaque_user_data /* coverity */) {
+			/*
+			 * We are recursing to create the accepted sink, do
+			 * the binding while still in create so any downstream
+			 * actions understand our situation from the start
+			 */
+			h->sink_local_bind = (struct lws_ss_handle *)
+							opaque_user_data;
+			h->sink_local_bind->sink_local_bind = h;
+		} else {
+
+			/* we are creating an ss connected to a sink... find the sink */
+
+			lws_start_foreach_dll(struct lws_dll2 *, d,
+					      lws_dll2_get_head(&context->sinks)) {
+				sn = lws_container_of(d, lws_ss_sinks_t, list);
+
+				if (!strcmp(sn->info.streamtype, ssi->streamtype)) {
+					lws_ss_handle_t *has;
+
+					/*
+					 * How does the sink feel about us joining?
+					 */
+
+					if (sn->info.state(h + 1, h, LWSSSCS_SINK_JOIN,
+							    sn->accepts.count)) {
+						lwsl_ss_notice(h, "sink rejected");
+						goto fail_creation;
+					}
+
+					/*
+					 * Recurse to instantiate an accepted sink SS
+					 * for us to bind to... pass bind source handle
+					 * in as opaque data
+					 */
+
+					if (lws_ss_create(context, tsi, &sn->info,
+							  h, &has, NULL, NULL)) {
+						lwsl_ss_err(h, "sink accept failed");
+						goto fail_creation;
+					}
+
+					lws_dll2_add_tail(&has->sink_bind, &sn->accepts);
+
+					lwsl_ss_notice(h, "bound to sink");
+					break;
+				}
+
+			} lws_end_foreach_dll(d);
+
+			if (!h->sink_local_bind) {
+				lwsl_cx_err(context, "no sink %s", ssi->streamtype);
+				goto fail_creation;
+			}
+		}
+	}
+#endif
+
 	h->info = *ssi;
 	h->policy = pol;
 	h->context = context;
 	h->tsi = (uint8_t)tsi;
-	h->seq = seq_owner;
 
 	if (h->info.flags & LWSSSINFLAGS_PROXIED)
 		h->proxy_onward = 1;
@@ -1089,17 +1310,6 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 	*v = opaque_user_data;
 
 	p += ssi->user_alloc;
-
-#if defined(LWS_WITH_SSPLUGINS)
-	if (pol->plugins[0]) {
-		h->nauthi = p;
-		p += pol->plugins[0]->alloc;
-	}
-	if (pol->plugins[1]) {
-		h->sauthi = p;
-		p += pol->plugins[1]->alloc;
-	}
-#endif
 
 	if (pol->metadata_count) {
 		h->metadata = (lws_ss_metadata_t *)p;
@@ -1217,6 +1427,7 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 		}
 
 		*ppp++ = ss_pcols[h->policy->protocol]->protocol;
+
 #if defined(LWS_ROLE_WS)
 		if (h->policy->u.http.u.ws.subprotocol)
 			/*
@@ -1224,12 +1435,19 @@ lws_ss_create(struct lws_context *context, int tsi, const lws_ss_info_t *ssi,
 			 * ss-ws protocol in this vhost
 			 */
 			*ppp++ = &protocol_secstream_ws;
+
+		i.extensions = context->extensions;
 #endif
+
 		*ppp = NULL;
 		i.pprotocols = pprot;
 
 #if defined(LWS_WITH_TLS)
 		if (h->policy->flags & LWSSSPOLF_TLS) {
+			if (!h->policy->trust.server.cert) {
+				lwsl_ss_err(h, "Policy lacks tls cert");
+				goto fail_creation;
+			}
 			i.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 			i.server_ssl_cert_mem =
 				h->policy->trust.server.cert->ca_der;
@@ -1305,9 +1523,18 @@ extant:
 	    lws_fi(&h->fic, "ss_create_destroy_me"))
 		goto fail_creation;
 
+	n = 0;
 #if defined(LWS_WITH_SYS_SMD)
 	if (!(ssi->flags & LWSSSINFLAGS_PROXIED) &&
-	    pol == &pol_smd) {
+	    pol == &pol_smd)
+		n = 1;
+#endif
+#if defined(LWS_WITH_SERVER)
+	if (h->sink_local_bind)
+		n = 1;
+#endif
+
+	if (n) {
 		r = lws_ss_event_helper(h, LWSSSCS_CONNECTING);
 		if (r || lws_fi(&h->fic, "ss_create_smd_1"))
 			goto fail_creation;
@@ -1315,9 +1542,11 @@ extant:
 		if (r || lws_fi(&h->fic, "ss_create_smd_2"))
 			goto fail_creation;
 	}
-#endif
 
-	if (!(ssi->flags & LWSSSINFLAGS_REGISTER_SINK) &&
+	if (
+#if defined(LWS_WITH_SERVER)
+			!h->sink_local_bind &&
+#endif
 	    ((h->policy->flags & LWSSSPOLF_NAILED_UP)
 #if defined(LWS_WITH_SYS_SMD)
 		|| ((h->policy == &pol_smd) //&&
@@ -1348,6 +1577,9 @@ fail_creation:
 	if (ppss)
 		*ppss = NULL;
 
+#if defined(LWS_WITH_SERVER)
+	lws_dll2_remove(&h->sink_bind);
+#endif
 	lws_ss_destroy(&h);
 
 	return 1;
@@ -1365,6 +1597,7 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 	struct lws_context_per_thread *pt;
 #if defined(LWS_WITH_SERVER)
 	struct lws_vhost *v = NULL;
+	lws_ss_handle_t *hlb;
 #endif
 	lws_ss_handle_t *h = *ppss;
 	lws_ss_metadata_t *pmd;
@@ -1393,6 +1626,20 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 #endif
 
 	if (h->wsi) {
+
+		lwsl_warn("%s: conn->ss->wsi %d %d\n", __func__,
+				h->wsi->bound_ss_proxy_conn, h->wsi->client_proxy_onward);
+
+		if (h->wsi->bound_ss_proxy_conn) {
+			struct lws_sss_proxy_conn *conn = (struct lws_sss_proxy_conn *)
+				lws_get_opaque_user_data(h->wsi);
+
+			if (!conn)
+				return;
+
+			conn->ss = NULL;
+		}
+
 		/*
 		 * Don't let the wsi point to us any more,
 		 * we (the ss object bound to the wsi) are going away now
@@ -1400,6 +1647,10 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 		lws_set_opaque_user_data(h->wsi, NULL);
 		lws_set_timeout(h->wsi, 1, LWS_TO_KILL_SYNC);
 	}
+
+#if defined(LWS_WITH_SERVER)
+	lws_dll2_remove(&h->sink_bind);
+#endif
 
 	/*
 	 * if we bound an smd registration to the SS, unregister it
@@ -1421,10 +1672,23 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 	lws_pt_lock(pt, __func__);
 	*ppss = NULL;
 	lws_dll2_remove(&h->list);
+#if defined(LWS_WITH_FILE_OPS)
+	lws_sul_cancel(&h->fops_sul);
+	if (h->fop_fd)
+		lws_vfs_file_close(&h->fop_fd);
+#endif
 #if defined(LWS_WITH_SERVER)
-		lws_dll2_remove(&h->cli_list);
+	lws_dll2_remove(&h->cli_list);
+	lws_dll2_remove(&h->sink_bind);
+	lws_sul_cancel(&h->sul_txreq);
+	hlb = h->sink_local_bind;
+	if (hlb) {
+		h->sink_local_bind = NULL;
+		lws_ss_destroy(&hlb);
+	}
 #endif
 	lws_dll2_remove(&h->to_list);
+
 	lws_sul_cancel(&h->sul_timeout);
 
 	/*
@@ -1468,7 +1732,7 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 	{
 
 		lws_ss_metadata_t *imd;
-	       
+
 		pmd = h->instant_metadata;
 
 		while (pmd) {
@@ -1509,7 +1773,7 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 #endif
 
 #if defined(LWS_WITH_SERVER)
-	if (v)
+	if (v && (h->info.flags & LWSSSINFLAGS_SERVER))
 		/*
 		 * For server, the policy describes a vhost that implements the
 		 * server, when we take down the ss, we take down the related
@@ -1527,6 +1791,7 @@ lws_ss_destroy(lws_ss_handle_t **ppss)
 	 * If any hanging caliper measurement, dump it, and free any tags
 	 */
 	lws_metrics_caliper_report_hist(h->cal_txn, (struct lws *)NULL);
+	lws_metrics_tags_destroy(&h->cal_txn.mtags_owner);
 #endif
 
 	lws_sul_cancel(&h->sul_timeout);
@@ -1555,12 +1820,52 @@ lws_ss_server_foreach_client(struct lws_ss_handle *h, lws_sssfec_cb cb,
 			     void *arg)
 {
 	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1, h->src_list.head) {
-		struct lws_ss_handle *h =
+		struct lws_ss_handle *hh =
 			lws_container_of(d, struct lws_ss_handle, cli_list);
 
-		cb(h, arg);
+		cb(hh, arg);
 
 	} lws_end_foreach_dll_safe(d, d1);
+}
+
+/*
+ * Deal with tx requests between source and accepted sink... h is the guy who
+ * requested the write
+ */
+
+static void
+lws_ss_sink_txreq_cb(lws_sorted_usec_list_t *sul)
+{
+	struct lws_ss_handle *h = lws_container_of(sul, struct lws_ss_handle,
+						   sul_txreq);
+	uint8_t buf[1380 + LWS_PRE];
+	size_t size = sizeof(buf) - LWS_PRE;
+	lws_ss_state_return_t r;
+	int flags = 0;
+
+	/* !!! just let writes happen for now */
+
+	assert(h->sink_local_bind);
+
+	/* collect the source tx */
+	r = h->info.tx(h + 1, 0, buf + LWS_PRE, &size, &flags);
+	switch (r) {
+	case LWSSSSRET_OK:
+		if (!h->sink_local_bind->info.rx) {
+			lwsl_ss_warn(h->sink_local_bind, "No RX cb");
+			break;
+		}
+		r = h->sink_local_bind->info.rx(&h->sink_local_bind[1],
+						 buf + LWS_PRE, size, flags);
+		_lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, NULL,
+							    &h->sink_local_bind);
+		break;
+	case LWSSSSRET_TX_DONT_SEND:
+		break;
+	default:
+		_lws_ss_handle_state_ret_CAN_DESTROY_HANDLE(r, NULL, &h);
+		break;
+	}
 }
 #endif
 
@@ -1597,6 +1902,21 @@ _lws_ss_request_tx(lws_ss_handle_t *h)
 
 	if (h->policy->flags & LWSSSPOLF_SERVER)
 		return LWSSSSRET_OK;
+
+#if defined(LWS_WITH_SERVER)
+	if (h->sink_local_bind) {
+		/*
+		 * We are bound to a local sink / source
+		 */
+
+		lwsl_ss_notice(h->sink_local_bind, "Req tx");
+
+		lws_sul_schedule(h->context, 0, &h->sink_local_bind->sul_txreq,
+				 lws_ss_sink_txreq_cb, 1);
+
+		return LWSSSSRET_OK;
+	}
+#endif
 
 	/*
 	 * there's currently no wsi / connection associated with the ss handle
@@ -1687,17 +2007,20 @@ lws_ss_cancel_notify_dll(struct lws_dll2 *d, void *user)
 	return 0;
 }
 
-struct lws_sequencer *
-lws_ss_get_sequencer(lws_ss_handle_t *h)
-{
-	return h->seq;
-}
-
 struct lws_context *
 lws_ss_get_context(struct lws_ss_handle *h)
 {
 	return h->context;
 }
+
+struct lws_vhost *
+lws_ss_get_vhost(struct lws_ss_handle *h)
+{
+	if (!h->wsi)
+		return NULL;
+	return h->wsi->a.vhost;
+}
+
 
 const char *
 lws_ss_rideshare(struct lws_ss_handle *h)
@@ -1824,6 +2147,14 @@ lws_log_prepend_ss(struct lws_log_cx *cx, void *obj, char **p, char *e)
 			lws_ss_tag(h));
 }
 
+void
+lws_ss_validity_confirmed(struct lws_ss_handle *h)
+{
+	if (h->wsi)
+		lws_validity_confirmed(h->wsi);
+}
+
+
 #if defined(_DEBUG)
 void
 lws_ss_assert_extant(struct lws_context *cx, int tsi, struct lws_ss_handle *h)
@@ -1846,3 +2177,21 @@ lws_ss_assert_extant(struct lws_context *cx, int tsi, struct lws_ss_handle *h)
 	assert(0);
 }
 #endif
+
+void
+lws_ss_dump_extant(struct lws_context *cx, int tsi)
+{
+#if (_LWS_ENABLED_LOGS & LLL_NOTICE)
+	struct lws_context_per_thread *pt = &cx->pt[tsi];
+
+	lwsl_cx_notice(cx, "pt%d SS Rollcall (%d members)", tsi, (int)pt->ss_owner.count);
+
+	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1, pt->ss_owner.head) {
+		struct lws_ss_handle *h = lws_container_of(d,
+						struct lws_ss_handle, list);
+
+		lwsl_ss_notice(h, "rollcall");
+	} lws_end_foreach_dll_safe(d, d1);
+#endif
+}
+

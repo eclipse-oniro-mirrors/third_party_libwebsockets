@@ -203,14 +203,15 @@ static struct lws_protocols protocols[] = {
  * compressed files without decompressing the whole archive)
  */
 static lws_fop_fd_t
-test_server_fops_open(const struct lws_plat_file_ops *fops,
+test_server_fops_open(const struct lws_plat_file_ops *this_fops,
+		      const struct lws_plat_file_ops *fops,
 		     const char *vfs_path, const char *vpath,
 		     lws_fop_flags_t *flags)
 {
 	lws_fop_fd_t fop_fd;
 
 	/* call through to original platform implementation */
-	fop_fd = fops_plat.open(fops, vfs_path, vpath, flags);
+	fop_fd = fops_plat.open(fops, fops, vfs_path, vpath, flags);
 
 	if (fop_fd)
 		lwsl_info("%s: opening %s, ret %p, len %lu\n", __func__,
@@ -261,77 +262,29 @@ static const struct lws_extension exts[] = {
  */
 
 static const struct lws_http_mount mount_ziptest_uncomm = {
-	NULL,			/* linked-list pointer to next*/
-	"/uncommziptest",		/* mountpoint in URL namespace on this vhost */
-	LOCAL_RESOURCE_PATH"/candide-uncompressed.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	14,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
+	.mountpoint		= "/uncommziptest",		/* mountpoint in URL namespace on this vhost */
+	.origin			= LOCAL_RESOURCE_PATH"/candide-uncompressed.zip",	/* handler */
+	.origin_protocol	= LWSMPRO_FILE,			/* origin points to a file */
+	.mountpoint_len		= 14,				/* strlen("/ziptest"), ie length of the mountpoint */
 }, mount_ziptest = {
-	(struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
-	"/ziptest",		/* mountpoint in URL namespace on this vhost */
-	LOCAL_RESOURCE_PATH"/candide.zip",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* origin points to a callback */
-	8,			/* strlen("/ziptest"), ie length of the mountpoint */
-	NULL,
-}, mount_post = {
-	(struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
-	"/formtest",		/* mountpoint in URL namespace on this vhost */
-	"protocol-post-demo",	/* handler */
-	NULL,	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_CALLBACK,	/* origin points to a callback */
-	9,			/* strlen("/formtest"), ie length of the mountpoint */
-	NULL,
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
+	.mountpoint		= "/ziptest",			/* mountpoint in URL namespace on this vhost */
+	.origin			= LOCAL_RESOURCE_PATH"/candide.zip",			/* handler */
+	.origin_protocol	= LWSMPRO_FILE,			/* origin points to a file */
+	.mountpoint_len		= 8,				/* strlen("/ziptest"), ie length of the mountpoint */
+}, mount_post = 	{
+	.mount_next		= (struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
+	.mountpoint		= "/formtest",			/* mountpoint in URL namespace on this vhost */
+	.protocol		= "protocol-post-demo",		/* handler */
+	.origin_protocol	= LWSMPRO_CALLBACK,		/* origin points to a callback */
+	.mountpoint_len		= 9,				/* strlen("/formtest"), ie length of the mountpoint */
 }, mount = {
-	/* .mount_next */		&mount_post,	/* linked-list "next" */
-	/* .mountpoint */		"/",		/* mountpoint URL */
-	/* .origin */			LOCAL_RESOURCE_PATH, /* serve from dir */
-	/* .def */			"test.html",	/* default filename */
-	/* .protocol */			NULL,
-	/* .cgienv */			NULL,
-	/* .extra_mimetypes */		NULL,
-	/* .interpret */		NULL,
-	/* .cgi_timeout */		0,
-	/* .cache_max_age */		0,
-	/* .auth_mask */		0,
-	/* .cache_reusable */		0,
-	/* .cache_revalidate */		0,
-	/* .cache_intermediaries */	0,
-	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
-	/* .mountpoint_len */		1,		/* char count */
-	/* .basic_auth_login_file */	NULL,
+	.mount_next		= &mount_post,			/* linked-list "next" */
+	.mountpoint		= "/",				/* mountpoint URL */
+	.origin			= LOCAL_RESOURCE_PATH,		/* serve from dir */
+	.def			= "test.html",			/* default filename */
+	.origin_protocol	= LWSMPRO_FILE,			/* files in a dir */
+	.mountpoint_len		= 1,				/* char count */
 };
 
 
@@ -626,6 +579,11 @@ int main(int argc, char **argv)
 			       "!DHE-RSA-AES256-SHA256:"
 			       "!AES256-GCM-SHA384:"
 			       "!AES256-SHA256";
+	/*
+	 * This is needed for DHE-RSA-AES256-GCM-SHA384, it does enable all
+	 * TLSv1.2 Kx=DH ciphers though (if the're on the ssl_cipher_list).
+	 */
+	info.options |= LWS_SERVER_OPTION_OPENSSL_AUTO_DH_PARAMETERS;
 #endif
 	info.mounts = &mount;
 #if defined(LWS_WITH_PEER_LIMITS)

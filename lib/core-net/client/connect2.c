@@ -28,6 +28,10 @@
 #include <netdb.h>
 #endif
 
+#ifndef AI_V4MAPPED
+#define AI_V4MAPPED 0
+#endif
+
 #if !defined(LWS_WITH_SYS_ASYNC_DNS)
 static int
 lws_getaddrinfo46(struct lws *wsi, const char *ads, struct addrinfo **result)
@@ -49,9 +53,7 @@ lws_getaddrinfo46(struct lws *wsi, const char *ads, struct addrinfo **result)
 
 #if !defined(__ANDROID__)
 		hints.ai_family = AF_UNSPEC;
-#if !defined(__OpenBSD__) && !defined(__OPENBSD)
 		hints.ai_flags = AI_V4MAPPED;
-#endif
 #endif
 	} else
 #endif
@@ -134,7 +136,7 @@ static const char * const dns_nxdomain = "DNS NXDOMAIN";
 #endif
 
 struct lws *
-lws_client_connect_2_dnsreq(struct lws *wsi)
+lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(struct lws *wsi)
 {
 	struct addrinfo *result = NULL;
 	const char *meth = NULL;
@@ -187,11 +189,15 @@ lws_client_connect_2_dnsreq(struct lws *wsi)
 		goto solo;
 	}
 
-	/* only pipeline things we associate with being a stream */
+	if (wsi->keepalive_rejected) {
+		lwsl_notice("defeating pipelining due to no "
+				"keepalive on server\n");
+		goto solo;
+	}
 
-	if (meth && strcmp(meth, "RAW") && strcmp(meth, "GET") &&
-		    strcmp(meth, "POST") && strcmp(meth, "PUT") &&
-		    strcmp(meth, "UDP") && strcmp(meth, "MQTT"))
+	/* only pipeline things we associate with being a stream */
+	if (meth && !_lws_is_http_method(meth) && strcmp(meth, "RAW")  &&
+		strcmp(meth, "UDP") && strcmp(meth, "MQTT"))
 		goto solo;
 
 	if (!adsin)
@@ -244,8 +250,7 @@ solo:
 	 * piggyback on our transaction queue
 	 */
 
-	if (meth && (!strcmp(meth, "RAW") || !strcmp(meth, "GET") ||
-		     !strcmp(meth, "POST") || !strcmp(meth, "PUT") ||
+	if (meth && (!strcmp(meth, "RAW") || _lws_is_http_method(meth) ||
 		     !strcmp(meth, "MQTT")) &&
 	    lws_dll2_is_detached(&wsi->dll2_cli_txn_queue) &&
 	    lws_dll2_is_detached(&wsi->dll_cli_active_conns)) {
@@ -365,7 +370,7 @@ solo:
 	else
 		n = lws_async_dns_query(wsi->a.context, wsi->tsi, adsin,
 				LWS_ADNS_RECORD_A, lws_client_connect_3_connect,
-				wsi, NULL);
+				wsi, NULL, NULL);
 
 	if (n == LADNS_RET_FAILED_WSI_CLOSED)
 		return NULL;

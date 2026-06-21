@@ -46,10 +46,7 @@
   #include <errno.h>
  #endif
  #include <signal.h>
-#if defined(LWS_AMAZON_RTOS)
-const char *
-gai_strerror(int);
-#else
+#if !defined(LWS_AMAZON_RTOS)
  #include <sys/socket.h>
 #endif
 
@@ -67,6 +64,9 @@ gai_strerror(int);
  #include "freertos/timers.h"
 #if defined(LWS_ESP_PLATFORM)
  #include <esp_attr.h>
+#if !defined(ETHER_ADDR_LEN)
+#define ETHER_ADDR_LEN 6
+#endif
 #endif
  #include <esp_system.h>
  #include <esp_task_wdt.h>
@@ -82,6 +82,11 @@ typedef SemaphoreHandle_t lws_mutex_t;
 #define lws_mutex_destroy(x)	vSemaphoreDelete(x)
 #define lws_mutex_lock(x)	(!xSemaphoreTake(x, portMAX_DELAY)) /*0 = OK */
 #define lws_mutex_unlock(x)	xSemaphoreGive(x)
+
+#define lws_tid_t		TaskHandle_t
+#define lws_thread_is(x)	(x == xTaskGetCurrentTaskHandle())
+#define lws_thread_id()		xTaskGetCurrentTaskHandle()
+
 
 #include <lwip/sockets.h>
 
@@ -122,7 +127,8 @@ struct lws;
 int
 insert_wsi(const struct lws_context *context, struct lws *wsi);
 
-#define delete_from_fd(A,B) A->lws_lookup[B - lws_plat_socket_offset()] = 0
+#define delete_from_fd(A,B) assert((int)A->max_fds > B - lws_plat_socket_offset()); \
+    A->lws_lookup[B - lws_plat_socket_offset()] = 0
 
 #define LWS_PLAT_TIMER_TYPE		TimerHandle_t
 #define LWS_PLAT_TIMER_CB(name, var)	void name(TimerHandle_t var)

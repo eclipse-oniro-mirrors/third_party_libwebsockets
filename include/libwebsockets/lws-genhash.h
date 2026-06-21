@@ -33,6 +33,11 @@
  */
 ///@{
 
+#if defined(LWS_WITH_AWSLC) || defined(LWS_WITH_BORINGSSL)
+#include <openssl/hmac.h>
+#endif
+
+
 enum lws_genhash_types {
 	LWS_GENHASH_TYPE_UNKNOWN,
 	LWS_GENHASH_TYPE_MD5,
@@ -50,6 +55,8 @@ enum lws_genhmac_types {
 };
 
 #define LWS_GENHASH_LARGEST 64
+
+#if defined(LWS_WITH_TLS) && defined(LWS_WITH_GENCRYPTO)
 
 struct lws_genhash_ctx {
         uint8_t type;
@@ -75,7 +82,8 @@ struct lws_genhmac_ctx {
 #else
 	const EVP_MD *evp_type;
 
-#if defined(LWS_HAVE_EVP_PKEY_new_raw_private_key)
+#if !defined(LWS_WITH_BORINGSSL) &&\
+    defined(LWS_HAVE_EVP_PKEY_new_raw_private_key)
 	EVP_MD_CTX *ctx;
 	EVP_PKEY *key;
 #else
@@ -186,4 +194,6 @@ lws_genhmac_update(struct lws_genhmac_ctx *ctx, const void *in, size_t len);
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_genhmac_destroy(struct lws_genhmac_ctx *ctx, void *result);
+
+#endif
 ///@}

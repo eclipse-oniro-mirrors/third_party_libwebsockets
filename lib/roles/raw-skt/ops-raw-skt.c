@@ -60,12 +60,14 @@ lws_raw_skt_connect(struct lws *wsi)
 	}
 #endif
 
-	n = user_callback_handle_rxflow(wsi->a.protocol->callback,
-					wsi, wsi->role_ops->adoption_cb[lwsi_role_server(wsi)],
-					wsi->user_space, NULL, 0);
-	if (n) {
-		lws_inform_client_conn_fail(wsi, (void *)"user", 4);
-		return 1;
+	if (!wsi->hdr_parsing_completed) {
+		n = user_callback_handle_rxflow(wsi->a.protocol->callback,
+				wsi, wsi->role_ops->adoption_cb[lwsi_role_server(wsi)],
+				wsi->user_space, NULL, 0);
+		if (n) {
+			lws_inform_client_conn_fail(wsi, (void *)"user", 4);
+			return 1;
+		}
 	}
 
 	lws_set_timeout(wsi, NO_PENDING_TIMEOUT, 0);
@@ -75,7 +77,7 @@ lws_raw_skt_connect(struct lws *wsi)
 }
 #endif
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_raw_skt(struct lws_context_per_thread *pt, struct lws *wsi,
 			   struct lws_pollfd *pollfd)
 {
@@ -172,7 +174,7 @@ rops_handle_POLLIN_raw_skt(struct lws_context_per_thread *pt, struct lws *wsi,
 #endif
 		default:
 			ebuf.token = NULL;
-			ebuf.len = 0;
+			ebuf.len = (int) wsi->a.protocol->rx_buffer_size;
 
 			buffered = lws_buflist_aware_read(pt, wsi, &ebuf, 1, __func__);
 			switch (ebuf.len) {
@@ -271,7 +273,6 @@ fail:
 	return LWS_HPI_RET_WSI_ALREADY_DIED;
 }
 
-#if defined(LWS_WITH_SERVER)
 static int
 rops_adoption_bind_raw_skt(struct lws *wsi, int type, const char *vh_prot_name)
 {
@@ -308,7 +309,6 @@ rops_adoption_bind_raw_skt(struct lws *wsi, int type, const char *vh_prot_name)
 
 	return 1; /* bound */
 }
-#endif
 
 #if defined(LWS_WITH_CLIENT)
 static int
@@ -339,11 +339,7 @@ rops_client_bind_raw_skt(struct lws *wsi,
 
 static const lws_rops_t rops_table_raw_skt[] = {
 	/*  1 */ { .handle_POLLIN	  = rops_handle_POLLIN_raw_skt },
-#if defined(LWS_WITH_SERVER)
 	/*  2 */ { .adoption_bind	  = rops_adoption_bind_raw_skt },
-#else
-	/*  2 */ { .adoption_bind	  = NULL },
-#endif
 #if defined(LWS_WITH_CLIENT)
 	/*  3 */ { .client_bind		  = rops_client_bind_raw_skt },
 #endif

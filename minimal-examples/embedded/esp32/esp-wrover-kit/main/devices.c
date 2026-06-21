@@ -1,7 +1,7 @@
 /*
  * devices for ESP WROVER KIT
  *
- * Written in 2010-2020 by Andy Green <andy@warmcat.com>
+ * Written in 2010-2022 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -143,8 +143,10 @@ static const lws_display_ili9341_t disp = {
 		.bl_dim			= &lws_pwmseq_static_half,
 		.bl_transition		= &lws_pwmseq_linear_wipe,
 		.bl_index		= 3,
-		.w			= 320,
-		.h			= 240,
+		.ic = {
+			.wh_px = { { 320,0 },      { 240,0 } },
+			.wh_mm = { { 64,00000000 },  { 48,00000000 } },
+		},
 		.latency_wake_ms	= 150,
 	},
 	.spi				= (lws_spi_ops_t *)&lbspi,
@@ -193,8 +195,8 @@ init_plat_devices(struct lws_context *ctx)
 
 		memset(&creds, 0, sizeof(creds));
 
-		lws_strncpy(creds.ssid, "xxx", sizeof(creds.ssid));
-		lws_strncpy(creds.passphrase, "yyy", sizeof(creds.passphrase));
+	//	lws_strncpy(creds.ssid, "Ulxxxx", sizeof(creds.ssid));
+	//	lws_strncpy(creds.passphrase, "secret", sizeof(creds.passphrase));
 		lws_dll2_add_tail(&creds.list, &netdevs->owner_creds);
 
 		if (lws_netdev_credentials_settings_set(netdevs)) {

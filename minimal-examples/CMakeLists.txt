@@ -1,7 +1,7 @@
 #
 # libwebsockets - small server side websockets and web server implementation
 #
-# Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+# Copyright (C) 2010 - 2021 Andy Green <andy@warmcat.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to
@@ -35,9 +35,9 @@ MACRO(SUBDIRLIST result curdir)
 ENDMACRO()
 
 include_directories(${LWS_LIB_BUILD_INC_PATHS})
-link_libraries(${LIB_LIST_AT_END})
 
 SUBDIRLIST(SUBDIRS "${PROJECT_SOURCE_DIR}/minimal-examples")
+
 FOREACH(subdir ${SUBDIRS})
 
 	SUBDIRLIST(SUBDIRS2 "${PROJECT_SOURCE_DIR}/minimal-examples/${subdir}")

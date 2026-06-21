@@ -178,24 +178,51 @@ lws_plat_init(struct lws_context *context,
 		return 1;
 	}
 
-#if defined(LWS_WITH_PLUGINS)
+#if defined(LWS_HAVE_SSL_CTX_set_keylog_callback) && !defined(__COVERITY__) && \
+		defined(LWS_WITH_TLS) && defined(LWS_WITH_CLIENT)
 	{
-		char *ld_env = getenv("LD_LIBRARY_PATH");
+		char *klf_env = getenv("SSLKEYLOGFILE");
+		size_t n = 0;
 
-		if (ld_env) {
-			const char *pp[2] = { ld_env, NULL };
+		/* ... coverity taint with lws_strncpy()... */
 
-			lws_plugins_init(&context->plugin_list, pp,
-					 "lws_protocol_plugin", NULL,
-					 protocol_plugin_cb, context);
+		while (klf_env && n < sizeof(context->keylog_file) - 1 &&
+		       klf_env[n]) {
+			context->keylog_file[n] = klf_env[n];
+			n++;
+		}
+		context->keylog_file[n] = '\0';
+	}
+#endif
+
+#if defined(LWS_WITH_PLUGINS) && !defined(LWS_WITH_PLUGINS_BUILTIN)
+	{
+		const char *pp[8] = { };
+		int n = 0;
+
+		if (info->plugin_dirs) {
+			int m = 0;
+
+			while (info->plugin_dirs[m] && n < (int)LWS_ARRAY_SIZE(pp) - 1)
+				pp[n++] = info->plugin_dirs[m++];
 		}
 
-		if (info->plugin_dirs)
-			lws_plugins_init(&context->plugin_list,
-					 info->plugin_dirs,
-					 "lws_protocol_plugin", NULL,
-					 protocol_plugin_cb, context);
+		if (n < (int)LWS_ARRAY_SIZE(pp) - 1)
+			pp[n++] = LWS_INSTALL_DATADIR"/libwebsockets-test-server/plugins";
+
+		pp[n] = NULL;
+
+		/* We'll also look at LD_LIBRARY_PATH first in here */
+
+		lws_plugins_init(&context->plugin_list, pp,
+				 "lws_protocol_plugin", NULL,
+				 protocol_plugin_cb, context);
 	}
+
+#endif
+#if defined(LWS_BUILTIN_PLUGIN_NAMES) && defined(LWS_WITH_PLUGINS)
+	lws_plugins_handle_builtin(&context->plugin_list,
+				   protocol_plugin_cb, context);
 #endif
 
 
@@ -240,4 +267,9 @@ lws_plat_context_late_destroy(struct lws_context *context)
 		lwsl_err("ZERO RANDOM FD\n");
 	if (context->fd_random != LWS_INVALID_FILE)
 		close(context->fd_random);
+
+#if defined(LWS_WITH_MBEDTLS)
+	mbedtls_entropy_free(&context->mec);
+	mbedtls_ctr_drbg_free(&context->mcdc);
+#endif
 }

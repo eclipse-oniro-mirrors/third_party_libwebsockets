@@ -74,9 +74,12 @@ static const char * system_state_names[] = {
 	"REGISTERED",
 	"AUTH1",
 	"AUTH2",
+	"ONE_TIME_UPDATES",
 	"OPERATIONAL",
 	"POLICY_INVALID",
-	"DESTROYING"
+	"DESTROYING",
+	"AWAITING_MODAL_UPDATING",
+	"MODAL_UPDATING"
 };
 
 
@@ -105,6 +108,10 @@ lws_state_notify_protocol_init(struct lws_state_manager *mgr,
 	for (n = 0; n < context->count_threads; n++)
 		lws_system_do_attach(&context->pt[n]);
 
+	if (target == LWS_SYSTATE_COLLECTING_STDIN &&
+	    (!context->system_ops || !context->system_ops->stdin_rx))
+		return 0; /* move on */
+
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 	if (target == LWS_SYSTATE_DHCP) {
 		/*
@@ -123,6 +130,23 @@ lws_state_notify_protocol_init(struct lws_state_manager *mgr,
 		lws_ntpc_trigger(context);
 
 		return 1;
+	}
+#endif
+
+#if defined(LWS_WITH_OTA)
+	if (target == LWS_SYSTATE_OPERATIONAL) {
+		uint16_t b;
+
+		/*
+		 * We add jitter, so possibly large numbers of devices don't
+		 * all wake up and check for updates at the same moment after a
+		 * power outage
+		 */
+
+		lws_get_random(context, &b, 2);
+		lws_sul_schedule(context, 0, &context->sul_ota_periodic,
+				 lws_ota_periodic_cb, (/* 30 + */ (b % 1000) *
+							LWS_US_PER_MS));
 	}
 #endif
 
@@ -346,7 +370,7 @@ static const char * const opts_str =
 
 #endif
 
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 static const struct lws_evlib_map {
 	uint64_t	flag;
 	const char	*name;
@@ -386,9 +410,6 @@ lws_create_context(const struct lws_context_creation_info *info)
 #if defined(LWS_WITH_CACHE_NSCOOKIEJAR) && defined(LWS_WITH_CLIENT)
 	struct lws_cache_creation_info ci;
 #endif
-#if defined(LWS_WITH_MBEDTLS)
-	char mbedtls_version[32];
-#endif
 
 #if defined(__ANDROID__)
 	struct rlimit rt;
@@ -402,10 +423,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 		size = sizeof(struct lws_context);
 #endif
-
+#if !defined(LWS_PLAT_BAREMETAL) && defined(LWS_WITH_NETWORK)
 	int n;
+#endif
 	unsigned int lpf = info->fd_limit_per_thread;
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 	struct lws_plugin		*evlib_plugin_list = NULL;
 #if defined(_DEBUG) && !defined(LWS_WITH_NO_LOGS)
 	char		*ld_env;
@@ -545,6 +567,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		fatal_exit_defer = !!info->foreign_loops;
 		us_wait_resolution = 0;
 	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBUV)) {
+		lwsl_cx_err(context, "Application wants libuv, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_LIBEVENT)
@@ -552,6 +579,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		extern const lws_plugin_evlib_t evlib_event;
 		plev = &evlib_event;
 		us_wait_resolution = 0;
+	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBEVENT)) {
+		lwsl_cx_err(context, "Application wants libevent, but lws not built with it");
+		goto bail;
 	}
 #endif
 
@@ -561,6 +593,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		plev = &evlib_glib;
 		us_wait_resolution = 0;
 	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_GLIB)) {
+		lwsl_cx_err(context, "Application wants glib, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_LIBEV)
@@ -568,6 +605,11 @@ lws_create_context(const struct lws_context_creation_info *info)
 		extern const lws_plugin_evlib_t evlib_ev;
 		plev = &evlib_ev;
 		us_wait_resolution = 0;
+	}
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_LIBEV)) {
+		lwsl_cx_err(context, "Application wants libev, but lws not built with it");
+		goto bail;
 	}
 #endif
 
@@ -577,6 +619,11 @@ lws_create_context(const struct lws_context_creation_info *info)
         plev = &evlib_sd;
         us_wait_resolution = 0;
     }
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_SDEVENT)) {
+		lwsl_cx_err(context, "Application wants sdevent, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #if defined(LWS_WITH_ULOOP)
@@ -585,6 +632,11 @@ lws_create_context(const struct lws_context_creation_info *info)
         plev = &evlib_uloop;
         us_wait_resolution = 0;
     }
+#else
+	if (lws_check_opt(info->options, LWS_SERVER_OPTION_ULOOP)) {
+		lwsl_cx_err(context, "Application wants uloop, but lws not built with it");
+		goto bail;
+	}
 #endif
 
 #endif /* with event libs */
@@ -617,6 +669,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 #if defined(LWS_WITH_NETWORK)
 	context->event_loop_ops = plev->ops;
 	context->us_wait_resolution = us_wait_resolution;
+	context->wol_if = info->wol_if;
 #if defined(LWS_WITH_TLS_JIT_TRUST)
 	{
 		struct lws_cache_creation_info ci;
@@ -644,6 +697,10 @@ lws_create_context(const struct lws_context_creation_info *info)
 	context->gid = info->gid;
 	context->username = info->username;
 	context->groupname = info->groupname;
+#endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+	context->argc			= info->argc;
+	context->argv			= info->argv;
 #endif
 	context->name			= info->vhost_name;
 	if (info->log_cx)
@@ -788,11 +845,16 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif /* network */
 
 #if defined(LWS_WITH_MBEDTLS)
-	mbedtls_version_get_string(mbedtls_version);
-#endif
+	{
+		char mbedtls_version[32];
 
-#if defined(LWS_WITH_MBEDTLS)
-	lwsl_cx_notice(context, "LWS: %s, MbedTLS-%s %s%s", library_version, mbedtls_version, opts_str, s);
+#if defined(MBEDTLS_VERSION_C)
+		mbedtls_version_get_string(mbedtls_version);
+#else
+		lws_snprintf(mbedtls_version, sizeof(mbedtls_version), "%s", MBEDTLS_VERSION_STRING);
+#endif
+		lwsl_cx_notice(context, "LWS: %s, MbedTLS-%s %s%s", library_version, mbedtls_version, opts_str, s);
+	}
 #else
 	lwsl_cx_notice(context, "LWS: %s, %s%s", library_version, opts_str, s);
 #endif
@@ -820,6 +882,10 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 #endif
 
+#if defined(LWS_WITH_SERVER)
+	context->lcg[LWSLCG_WSI_SSP_SINK].tag_prefix = "SSsink";
+	context->lcg[LWSLCG_WSI_SSP_SOURCE].tag_prefix = "SSsrc";
+#endif
 
 #if defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
 	/* directly use the user-provided policy object list */
@@ -830,6 +896,18 @@ lws_create_context(const struct lws_context_creation_info *info)
 	context->ss_proxy_bind = info->ss_proxy_bind;
 	context->ss_proxy_port = info->ss_proxy_port;
 	context->ss_proxy_address = info->ss_proxy_address;
+
+	if (info->txp_ops_ssproxy)
+		context->txp_ppath.ops_onw = info->txp_ops_ssproxy;
+	else
+		context->txp_ppath.ops_onw = &txp_ops_ssproxy_wsi;
+	if (info->txp_ops_sspc)
+		context->txp_cpath.ops_onw = info->txp_ops_sspc;
+	else
+		context->txp_cpath.ops_onw = &txp_ops_sspc_wsi;
+
+	context->txp_ssproxy_info = info->txp_ssproxy_info;
+
 	if (context->ss_proxy_bind && context->ss_proxy_address)
 		lwsl_cx_notice(context, "ss proxy bind '%s', port %d, ads '%s'",
 			context->ss_proxy_bind, context->ss_proxy_port,
@@ -844,14 +922,15 @@ lws_create_context(const struct lws_context_creation_info *info)
         if (info->extensions)
                 lwsl_cx_warn(context, "WITHOUT_EXTENSIONS but exts ptr set");
 #endif
+#if defined(LWS_ROLE_WS) && !defined(LWS_WITHOUT_EXTENSIONS)
+        context->extensions = info->extensions;
+#endif
+
 #endif /* network */
 
 #if defined(LWS_WITH_SECURE_STREAMS)
 #if !defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
 	context->pss_policies_json = info->pss_policies_json;
-#endif
-#if defined(LWS_WITH_SSPLUGINS)
-	context->pss_plugins = info->pss_plugins;
 #endif
 #endif
 
@@ -870,7 +949,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 #endif
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 	lws_mutex_refcount_init(&context->mr);
 #endif
 
@@ -891,6 +970,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 	context->fops_platform.LWS_FOP_READ	= _lws_plat_file_read;
 	context->fops_platform.LWS_FOP_WRITE	= _lws_plat_file_write;
 	context->fops_platform.fi[0].sig	= NULL;
+	context->fops_platform.cx		= context;
 
 	/*
 	 *  arrange a linear linked-list of fops starting from context->fops
@@ -907,6 +987,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 	/* make a soft copy so we can set .next */
 	context->fops_zip = fops_zip;
 	prev->next = &context->fops_zip;
+	context->fops_zip.cx = context;
 	prev = (struct lws_plat_file_ops *)prev->next;
 #endif
 
@@ -935,7 +1016,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 
 	context->options = info->options;
 
-#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(WIN32)
+#if defined(LWS_HAVE_SYS_RESOURCE_H) && !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(WIN32) && !defined(LWS_PLAT_BAREMETAL)
 	/*
 	 * If asked, try to set the rlimit / ulimit for process sockets / files.
 	 * We read the effective limit in a moment, so we will find out the
@@ -1031,12 +1112,20 @@ lws_create_context(const struct lws_context_creation_info *info)
 	}
 
 #endif
+
+	context->timeout_secs = 15;
+
 #if defined(LWS_WITH_NETWORK)
+#if defined(WIN32)
+	if (!info->win32_connect_check_interval_usec)
+		context->win32_connect_check_interval_usec = 1000;
+	else
+		context->win32_connect_check_interval_usec =
+				info->win32_connect_check_interval_usec;
+#endif
 	if (info->timeout_secs)
 		context->timeout_secs = info->timeout_secs;
-	else
-#endif
-		context->timeout_secs = 15;
+#endif /* WITH_NETWORK */
 
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
 	if (info->max_http_header_data)
@@ -1086,7 +1175,9 @@ lws_create_context(const struct lws_context_creation_info *info)
 	}
 #endif
 
+#if !defined(LWS_PLAT_BAREMETAL) && defined(LWS_WITH_NETWORK)
 	n = 0;
+#endif
 #if defined(LWS_WITH_NETWORK)
 
 	context->default_retry.retry_ms_table = default_backoff_table;
@@ -1094,8 +1185,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 			context->default_retry.retry_ms_table_count =
 					LWS_ARRAY_SIZE(default_backoff_table);
 	context->default_retry.jitter_percent = 20;
-	context->default_retry.secs_since_valid_ping = 300;
-	context->default_retry.secs_since_valid_hangup = 310;
+	context->default_retry.secs_since_valid_ping = 40;
+	context->default_retry.secs_since_valid_hangup = 50;
 
 	if (info->retry_and_idle_policy &&
 	    info->retry_and_idle_policy->secs_since_valid_ping) {
@@ -1128,7 +1219,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 		context->pt[n].fake_wsi = (struct lws *)u;
 		u += sizeof(struct lws);
 
-		memset(context->pt[n].fake_wsi, 0, sizeof(struct lws));
+		memset((void *)context->pt[n].fake_wsi, 0, sizeof(struct lws));
 #endif
 
 		context->pt[n].evlib_pt = u;
@@ -1139,9 +1230,6 @@ lws_create_context(const struct lws_context_creation_info *info)
 		context->pt[n].http.ah_pool_length = 0;
 #endif
 		lws_pt_mutex_init(&context->pt[n]);
-#if defined(LWS_WITH_SEQUENCER)
-		lws_seq_pt_init(&context->pt[n]);
-#endif
 
 #if defined(LWS_WITH_CGI)
 		if (lws_rops_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy))
@@ -1190,13 +1278,13 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 
 	lwsl_cx_info(context, "ctx: %5luB (%ld ctx + pt(%ld thr x %d)), "
-		  "pt-fds: %d, fdmap: %d",
+		  "pt-fds: %d",
 		  (long)sizeof(struct lws_context) +
 		  (context->count_threads * context->pt_serv_buf_size),
 		  (long)sizeof(struct lws_context),
 		  (long)context->count_threads,
 		  context->pt_serv_buf_size,
-		  context->fd_limit_per_thread, n);
+		  context->fd_limit_per_thread);
 
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
 	lwsl_cx_info(context, " http: ah_data: %u, ah: %lu, max count %u",
@@ -1213,7 +1301,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 	}
 #endif
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 	/* each thread serves his own chunk of fds */
 	for (n = 1; n < (int)context->count_threads; n++)
 		context->pt[n].fds = context->pt[n - 1].fds +
@@ -1288,15 +1376,13 @@ lws_create_context(const struct lws_context_creation_info *info)
 
 #if defined(LWS_WITH_NETWORK)
 
-#if defined(LWS_WITH_SYS_ASYNC_DNS) || defined(LWS_WITH_SYS_NTPCLIENT) || \
-	defined(LWS_WITH_SYS_DHCP_CLIENT)
 	{
 		/*
 		 * system vhost
 		 */
 
 		struct lws_context_creation_info ii;
-		const struct lws_protocols *pp[4];
+		const struct lws_protocols *pp[6], *ccop;
 		struct lws_vhost *vh;
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
 		extern const struct lws_protocols lws_async_dns_protocol;
@@ -1306,6 +1392,9 @@ lws_create_context(const struct lws_context_creation_info *info)
 #endif
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 		extern const struct lws_protocols lws_system_protocol_dhcpc4;
+#endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
+		extern const struct lws_protocols lws_system_protocol_stdin;
 #endif
 
 		n = 0;
@@ -1318,12 +1407,19 @@ lws_create_context(const struct lws_context_creation_info *info)
 #if defined(LWS_WITH_SYS_DHCP_CLIENT)
 		pp[n++] = &lws_system_protocol_dhcpc4;
 #endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL) && !defined(LWS_PLAT_ANDROID) && defined(LWS_WITH_NETWORK)
+		pp[n++] = &lws_system_protocol_stdin;
+#endif
 		pp[n] = NULL;
 
 		memset(&ii, 0, sizeof(ii));
-		ii.vhost_name = "system";
-		ii.pprotocols = pp;
-		ii.port = CONTEXT_PORT_NO_LISTEN;
+		ii.vhost_name	= "system";
+		ii.pprotocols	= pp;
+		ii.port		= CONTEXT_PORT_NO_LISTEN;
+		ii.options	= LWS_SERVER_OPTION_VH_INSTANTIATE_ALL_PROTOCOLS;
+
+		ccop = context->protocols_copy;
+		context->protocols_copy = NULL;
 
 		if (lws_fi(&context->fic, "ctx_createfail_sys_vh"))
 			vh = NULL;
@@ -1334,6 +1430,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 			goto bail_libuv_aware;
 		}
 
+		context->protocols_copy = ccop;
+
 		context->vhost_system = vh;
 
 		if (lws_protocol_init_vhost(vh, NULL) ||
@@ -1343,11 +1441,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 		}
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
 		lws_async_dns_init(context);
-			//goto bail_libuv_aware;
 #endif
 	}
-
-#endif
 
 #if defined(LWS_WITH_SYS_STATE)
 	/*
@@ -1380,7 +1475,8 @@ lws_create_context(const struct lws_context_creation_info *info)
 	 * if he's not saying he'll make his own vhosts later then act
 	 * compatibly and make a default vhost using the data in the info
 	 */
-	if (!lws_check_opt(info->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
+	if (!lws_check_opt(info->options, LWS_SERVER_OPTION_EXPLICIT_VHOSTS)
+			|| info->pprotocols) {
 		if (!lws_create_vhost(context, info) ||
 		    lws_fi(&context->fic, "ctx_createfail_def_vh")) {
 			lwsl_cx_err(context, "Failed to create default vhost");
@@ -1420,16 +1516,85 @@ lws_create_context(const struct lws_context_creation_info *info)
 	}
 #endif
 
+#if defined(LWS_WITH_SYS_ASYNC_DNS)
+	if (info->async_dns_servers) {
+		const char **dsrv = info->async_dns_servers;
+		while (*dsrv) {
+			lws_sockaddr46 sa46;
+			if (!lws_sa46_parse_numeric_address(*dsrv, &sa46)) {
+				lwsl_cx_info(context, "Adding DNS %s", *dsrv);
+				lws_async_dns_server_add(context, &sa46);
+			}
+			dsrv++;
+		}
+	}
+#endif
+
 #if defined(LWS_WITH_SECURE_STREAMS)
 
 #if !defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
-	if (context->pss_policies_json) {
+
 		/*
 		 * You must create your context with the explicit vhosts flag
 		 * in order to use secure streams
 		 */
-		assert(lws_check_opt(info->options,
-		       LWS_SERVER_OPTION_EXPLICIT_VHOSTS));
+	if (lws_check_opt(info->options,
+		       LWS_SERVER_OPTION_EXPLICIT_VHOSTS)) {
+
+		if (!context->pss_policies_json)
+			context->pss_policies_json =
+	"{\n"
+		"\"release\": \"1\",\n"
+		"\"product\": \"lws_default\",\n"
+		"\"schema-version\": 1,\n"
+		"\"retry\": [{\n"
+			"\"default\": {\n"
+				"\"backoff\": [1000, 2000, 3000, 5000, 10000],\n"
+				"\"conceal\": 5,\n"
+				"\"jitterpc\": 20,\n"
+				"\"svalidping\": 30,\n"
+				"\"svalidhup\": 35\n"
+			"}\n"
+		"}],\n"
+		"\"s\": [\n"
+			"{\n"
+				"\"__default\": {\n"
+					"\"endpoint\": \"${endpoint}\",\n"
+					"\"port\": 443,\n"
+#if defined(LWS_WITH_HTTP2)
+					"\"protocol\": \"h2\",\n"
+#else
+					"\"protocol\": \"h1\",\n"
+#endif
+					"\"http_method\": \"GET\",\n"
+					"\"http_url\": \"\",\n"
+					"\"metadata\": [{\n"
+						"\"endpoint\":"      "\"\",\n"
+						"\"acc\":"      "\"accept\",\n"
+						"\"ua\":"	"\"user-agent\"\n"
+					"}],\n"
+					"\"tls\": true,\n"
+					"\"allow_redirects\": true,\n"
+					"\"nghttp2_quirk_end_stream\": true,\n"
+					"\"h2q_oflow_txcr\": true,\n"
+					"\"direct_proto_str\": true,\n"
+					"\"opportunistic\": true,\n"
+					"\"retry\": \"default\",\n"
+					"\"timeout_ms\": 2000\n"
+				"},\n"
+		                    "\"captive_portal_detect\": {"
+		                        "\"endpoint\":"         "\"connectivitycheck.android.com\","
+		                        "\"http_url\":"         "\"generate_204\","
+		                        "\"port\":"             "80,"
+		                        "\"protocol\":"         "\"h1\","
+		                        "\"http_method\":"      "\"GET\","
+		                        "\"opportunistic\":"    "true,"
+		                        "\"http_expect\":"      "204,"
+		                        "\"http_fail_redirect\": true\n"
+				"}\n"
+			"}\n"
+		"]\n"
+	"}\n";
 
 		if (lws_ss_policy_parse_begin(context, 0) ||
 		    lws_fi(&context->fic, "ctx_createfail_ss_pol1")) {
@@ -1444,6 +1609,7 @@ lws_create_context(const struct lws_context_creation_info *info)
 					strlen(context->pss_policies_json));
 		if ((n != LEJP_CONTINUE && n < 0) ||
 		    lws_fi(&context->fic, "ctx_createfail_ss_pol2")) {
+			lwsl_err("%s: policy_parse came back with %d\n", __func__, n);
 			lws_ss_policy_parse_abandon(context);
 			goto bail_libuv_aware;
 		}
@@ -1457,6 +1623,10 @@ lws_create_context(const struct lws_context_creation_info *info)
 #else
 	if (context->pss_policies) {
 		/* user code set the policy objects directly, no parsing step */
+
+		/* you must set this content option to use SS */
+		assert(lws_check_opt(info->options,
+				       LWS_SERVER_OPTION_EXPLICIT_VHOSTS));
 
 		if (lws_ss_policy_set(context, "hardcoded") ||
 		    lws_fi(&context->fic, "ctx_createfail_ss_pol3")) {
@@ -1602,7 +1772,7 @@ lws_system_cpd_set(struct lws_context *cx, lws_cpd_result_t result)
 		return;
 
 #if !defined(LWS_WITH_NO_LOGS)
-	lwsl_cx_notice(cx, "setting CPD result %s", cname[result]);
+	lwsl_cx_info(cx, "setting CPD result %s", cname[result]);
 #endif
 
 	cx->captive_portal_detect = (uint8_t)result;
@@ -1668,10 +1838,11 @@ lws_pt_destroy(struct lws_context_per_thread *pt)
 #if defined(LWS_WITH_CGI)
 	lws_ctx_t ctx = pt->context;
 
-		if (lws_rops_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy))
-			(lws_rops_func_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy)).
-				pt_init_destroy(ctx, NULL, pt, 1);
+	if (lws_rops_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy))
+		(lws_rops_func_fidx(&role_ops_cgi, LWS_ROPS_pt_init_destroy)).
+			pt_init_destroy(ctx, NULL, pt, 1);
 #endif
+
 	vpt = (volatile struct lws_context_per_thread *)pt;
 	ftp = vpt->foreign_pfd_list;
 	while (ftp) {
@@ -1682,6 +1853,15 @@ lws_pt_destroy(struct lws_context_per_thread *pt)
 	vpt->foreign_pfd_list = NULL;
 
 	lws_pt_lock(pt, __func__);
+
+	lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
+			      lws_dll2_get_head(&pt->pre_natal_wsi_owner)) {
+		struct lws *wsi = lws_container_of(d, struct lws, pre_natal);
+
+		lwsl_wsi_info(wsi, "pt pre_natal cleanup");
+		__lws_free_wsi(wsi);
+
+	} lws_end_foreach_dll_safe(d, d1);
 
 	if (pt->pipe_wsi) {
 		lws_destroy_event_pipe(pt->pipe_wsi);
@@ -1695,23 +1875,19 @@ lws_pt_destroy(struct lws_context_per_thread *pt)
 	) {
 		struct lws wsi;
 
-		memset(&wsi, 0, sizeof(wsi));
+		memset((void *)&wsi, 0, sizeof(wsi));
 		wsi.a.context = pt->context;
 		wsi.tsi = (char)pt->tid;
 		lws_plat_pipe_close(&wsi);
 	}
 
 #if defined(LWS_WITH_SECURE_STREAMS)
-	lws_dll2_foreach_safe(&pt->ss_owner, NULL, lws_ss_destroy_dll);
+	while (pt->ss_owner.head)
+		lws_ss_destroy_dll(pt->ss_owner.head, NULL);
 
 #if defined(LWS_WITH_SECURE_STREAMS_PROXY_API) && defined(LWS_WITH_CLIENT)
 	lws_dll2_foreach_safe(&pt->ss_client_owner, NULL, lws_sspc_destroy_dll);
 #endif
-
-#if defined(LWS_WITH_SEQUENCER)
-	lws_seq_destroy_all_on_pt(pt);
-#endif
-
 
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
 		while (pt->http.ah_list)
@@ -1928,6 +2104,11 @@ next:
 		 */
 
 #if defined(LWS_WITH_NETWORK)
+
+#if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
+		lws_ss_proxy_destroy(context);
+#endif
+
 		if (context->event_loop_ops->destroy_context1) {
 			lwsl_cx_info(context, "do evlib destroy_context1 and wait");
 			context->event_loop_ops->destroy_context1(context);
@@ -2042,9 +2223,7 @@ next:
 			struct lws_context_per_thread *pt = &context->pt[n];
 
 			(void)pt;
-#if defined(LWS_WITH_SEQUENCER)
-			lws_seq_destroy_all_on_pt(pt);
-#endif
+
 			LWS_FOR_EVERY_AVAILABLE_ROLE_START(ar) {
 				if (lws_rops_fidx(ar, LWS_ROPS_pt_init_destroy))
 					(lws_rops_func_fidx(ar, LWS_ROPS_pt_init_destroy)).
@@ -2162,6 +2341,11 @@ next:
 		lws_dhcpc_remove(context, NULL);
 #endif
 
+#if defined(LWS_WITH_DLO)
+		lws_fonts_destroy(context);
+		lws_dlo_file_destroy(context);
+#endif
+
 		if (context->pt[0].fds)
 			lws_free_set_NULL(context->pt[0].fds);
 #endif
@@ -2188,15 +2372,32 @@ next:
 
 		if (context->ac_policy)
 			lwsac_free(&context->ac_policy);
-#endif
 
+#if defined(LWS_WITH_SERVER)
+		/* ... for every sink... */
+		lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
+				      lws_dll2_get_head(&context->sinks)) {
+			lws_ss_sinks_t *sn = lws_container_of(d, lws_ss_sinks_t,
+							      list);
+
+			assert(!sn->accepts.count);
+
+			lws_dll2_remove(&sn->list);
+			lws_free(sn);
+
+		} lws_end_foreach_dll_safe(d, d1);
+#endif
+#endif
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_BAREMETAL)
+		lws_free(context->stdin_linear);
+#endif
 		/*
 		 * Context lock is about to go away
 		 */
 
 		lws_context_unlock(context);
 
-#if LWS_MAX_SMP > 1
+#if defined(LWS_WITH_NETWORK) && LWS_MAX_SMP > 1
 		lws_mutex_refcount_destroy(&context->mr);
 #endif
 
@@ -2204,8 +2405,7 @@ next:
 		lws_metrics_destroy(context);
 #endif
 
-		if (context->external_baggage_free_on_destroy)
-			free(context->external_baggage_free_on_destroy);
+		free(context->external_baggage_free_on_destroy);
 
 #if defined(LWS_PLAT_FREERTOS)
 #if defined(LWS_AMAZON_RTOS)
@@ -2215,7 +2415,7 @@ next:
 #endif
 #endif
 
-#if defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
+#if defined(LWS_WITH_NETWORK) && defined(LWS_WITH_EVLIB_PLUGINS) && defined(LWS_WITH_EVENT_LIBS)
 		if (context->evlib_plugin_list)
 			lws_plugins_destroy(&context->evlib_plugin_list,
 					    NULL, NULL);

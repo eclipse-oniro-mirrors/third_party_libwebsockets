@@ -68,6 +68,7 @@ gai_strerror(int);
 #endif
 
 #if defined(LWS_WITH_ESP32)
+#include "lwip/port/include/lwipopts.h"
 #include "lwip/apps/sntp.h"
 #include <errno.h>
 #endif
@@ -116,7 +117,8 @@ struct lws;
 int
 insert_wsi(const struct lws_context *context, struct lws *wsi);
 
-#define delete_from_fd(A,B) A->lws_lookup[B - lws_plat_socket_offset()] = 0
+#define delete_from_fd(A,B)  assert((int)A->max_fds > B - lws_plat_socket_offset()); \
+    A->lws_lookup[B - lws_plat_socket_offset()] = 0
 
 #define LWS_PLAT_TIMER_TYPE		TimerHandle_t
 #define LWS_PLAT_TIMER_CB(name, var)	void name(TimerHandle_t var)

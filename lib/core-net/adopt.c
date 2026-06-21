@@ -23,6 +23,7 @@
  */
 
 #include "private-lib-core.h"
+#include "private-lib-async-dns.h"
 
 static int
 lws_get_idlest_tsi(struct lws_context *context)
@@ -45,7 +46,8 @@ lws_get_idlest_tsi(struct lws_context *context)
 }
 
 struct lws *
-lws_create_new_server_wsi(struct lws_vhost *vhost, int fixed_tsi, const char *desc)
+lws_create_new_server_wsi(struct lws_vhost *vhost, int fixed_tsi, int group,
+			  const char *desc)
 {
 	struct lws *new_wsi;
 	int n = fixed_tsi;
@@ -69,11 +71,8 @@ lws_create_new_server_wsi(struct lws_vhost *vhost, int fixed_tsi, const char *de
 
 	lws_wsi_fault_timedclose(new_wsi);
 
-	__lws_lc_tag(vhost->context, &vhost->context->lcg[
-#if defined(LWS_ROLE_H2) || defined(LWS_ROLE_MQTT)
-	strcmp(desc, "adopted") ? LWSLCG_WSI_MUX :
-#endif
-	LWSLCG_WSI_SERVER], &new_wsi->lc, desc);
+	__lws_lc_tag(vhost->context, &vhost->context->lcg[group],
+			&new_wsi->lc, "%s|%s", vhost->name, desc);
 
 	new_wsi->wsistate |= LWSIFR_SERVER;
 	new_wsi->tsi = (char)n;
@@ -143,7 +142,7 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	n = -1;
 	if (parent)
 		n = parent->tsi;
-	new_wsi = lws_create_new_server_wsi(vh, n, "adopted");
+	new_wsi = lws_create_new_server_wsi(vh, n, LWSLCG_WSI_SERVER, fi_wsi_name);
 	if (!new_wsi)
 		return NULL;
 
@@ -199,11 +198,19 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	lws_pt_unlock(pt);
 
 	/*
+	 * We can lose him from the context pre_natal "last resort" bind now,
+	 * because we will list him on a specific vhost
+	 */
+
+	lws_dll2_remove(&new_wsi->pre_natal);
+
+	/*
 	 * he's an allocated wsi, but he's not on any fds list or child list,
 	 * join him to the vhost's list of these kinds of incomplete wsi until
 	 * he gets another identity (he may do async dns now...)
 	 */
 	lws_vhost_lock(new_wsi->a.vhost);
+
 	lws_dll2_add_head(&new_wsi->vh_awaiting_socket,
 			  &new_wsi->a.vhost->vh_awaiting_socket_owner);
 	lws_vhost_unlock(new_wsi->a.vhost);
@@ -211,6 +218,10 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	return new_wsi;
 
 bail:
+        lws_pt_lock(pt, __func__); /* -------------- pt { */
+        lws_dll2_remove(&new_wsi->pre_natal);
+        lws_pt_unlock(pt); /* } pt --------------- */
+
 	lwsl_wsi_notice(new_wsi, "exiting on bail");
 	if (parent)
 		parent->child_list = new_wsi->sibling_list;
@@ -394,6 +405,17 @@ lws_adopt_descriptor_vhost2(struct lws *new_wsi, lws_adoption_type type,
 	if (new_wsi->a.context->event_loop_ops->sock_accept)
 		if (new_wsi->a.context->event_loop_ops->sock_accept(new_wsi))
 			goto fail;
+
+	{
+        	struct lws *nwsi = lws_get_network_wsi(new_wsi);
+		char ta[64];
+
+        	if (nwsi->sa46_peer.sa4.sin_family)
+        	        lws_sa46_write_numeric_address(&nwsi->sa46_peer, ta, sizeof(ta));
+        	else
+                	strncpy(ta, "unknown", sizeof(ta));
+		__lws_lc_tag_append(&new_wsi->lc, ta);
+	}
 
 #if LWS_MAX_SMP > 1
 	/*
@@ -761,8 +783,13 @@ lws_create_adopt_udp2(struct lws *wsi, const char *ads,
 		/* we connected: complete the udp socket adoption flow */
 
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
-	if (wsi->a.context->async_dns.wsi == wsi)
-		wsi->a.context->async_dns.dns_server_connected = 1;
+		{
+			lws_async_dns_server_t *asds =
+					__lws_async_dns_server_find_wsi(
+						&wsi->a.context->async_dns, wsi);
+			if (asds)
+				asds->dns_server_connected = 1;
+		}
 #endif
 
 		lws_free(s);
@@ -778,8 +805,12 @@ resume:
 	lws_addrinfo_clean(wsi);
 
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
-	if (wsi->a.context->async_dns.wsi == wsi)
-		lws_async_dns_drop_server(wsi->a.context);
+	{
+		lws_async_dns_server_t *asds = __lws_async_dns_server_find_wsi(
+					&wsi->a.context->async_dns, wsi);
+		if (asds)
+			lws_async_dns_drop_server(asds);
+	}
 #endif
 
 bail:
@@ -847,15 +878,13 @@ lws_create_adopt_udp(struct lws_vhost *vhost, const char *ads, int port,
 		lws_snprintf(buf, sizeof(buf), "%u", port);
 		n = getaddrinfo(ads, buf, &h, &r);
 		if (n) {
-
-#if (_LWS_ENABLED_LOGS & LLL_INFO)
 #if !defined(LWS_PLAT_FREERTOS)
-			lwsl_info("%s: getaddrinfo error: %s\n", __func__,
-				  gai_strerror(n));
+			lwsl_cx_info(vhost->context, "getaddrinfo error: %d", n);
 #else
-
-			lwsl_info("%s: getaddrinfo error: %s\n", __func__,
-					strerror(n));
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
+			char t16[16];
+			lwsl_cx_info(vhost->context, "getaddrinfo error: %s",
+				lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
 #endif
 #endif
 			//freeaddrinfo(r);
@@ -887,7 +916,7 @@ lws_create_adopt_udp(struct lws_vhost *vhost, const char *ads, int port,
 		n = lws_async_dns_query(vhost->context, 0, ads,
 					LWS_ADNS_RECORD_A,
 					lws_create_adopt_udp2, wsi,
-					(void *)ifname);
+					(void *)ifname, NULL);
 		// lwsl_notice("%s: dns query returned %d\n", __func__, n);
 		if (n == LADNS_RET_FAILED) {
 			lwsl_err("%s: async dns failed\n", __func__);

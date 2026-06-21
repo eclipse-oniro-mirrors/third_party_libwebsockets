@@ -34,8 +34,6 @@
 #include "private-lib-core.h"
 #include "private-lib-tls-openssl.h"
 
-static const int MAX_CLIENT_SSL_CA_NUMBER = 10;
-
 /*
  * Care: many openssl apis return 1 for success.  These are translated to the
  * lws convention of 0 for success.
@@ -94,6 +92,7 @@ OpenSSL_client_verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx)
 	SSL *ssl;
 	int n, err = 0;
 	struct lws *wsi;
+	const struct lws_protocols *lp;
 
 	/* keep old behaviour accepting self-signed server certs */
 	if (!preverify_ok) {
@@ -186,8 +185,11 @@ OpenSSL_client_verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx)
 		lws_tls_jit_trust_sort_kids(wsi, &wsi->tls.kid_chain);
 	}
 #endif
+	lp = &(lws_get_context_protocol(wsi->a.context, 0));
+	if (wsi->a.protocol)
+		lp = wsi->a.protocol;
 
-	n = lws_get_context_protocol(wsi->a.context, 0).callback(wsi,
+	n = lp->callback(wsi,
 			LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION,
 			x509_ctx, ssl, (unsigned int)preverify_ok);
 
@@ -277,7 +279,7 @@ lws_ssl_client_bio_create(struct lws *wsi)
 	wsi->tls.ssl = SSL_new(wsi->a.vhost->tls.ssl_client_ctx);
 	if (!wsi->tls.ssl) {
 		const char *es = ERR_error_string(
-#if defined(LWS_WITH_BORINGSSL)
+#if defined(LWS_WITH_BORINGSSL) || defined(LWS_WITH_AWSLC)
 	(uint32_t)
 #else
 	(unsigned long)
@@ -351,7 +353,7 @@ lws_ssl_client_bio_create(struct lws *wsi)
 #endif
 #endif
 #else
-#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+#if defined(SSL_CTRL_SET_TLSEXT_HOSTNAME) || defined(LWS_HAVE_SSL_set_tlsext_host_name)
 	SSL_set_tlsext_host_name(wsi->tls.ssl, hostname);
 #endif
 #endif
@@ -391,13 +393,15 @@ lws_ssl_client_bio_create(struct lws *wsi)
     defined(LWS_HAVE_SSL_get0_alpn_selected)
 	if (wsi->a.vhost->tls.alpn)
 		alpn_comma = wsi->a.vhost->tls.alpn;
-	if (wsi->stash)
+	if (wsi->stash) {
 		alpn_comma = wsi->stash->cis[CIS_ALPN];
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)
-	if (lws_hdr_copy(wsi, hostname, sizeof(hostname),
-			 _WSI_TOKEN_CLIENT_ALPN) > 0)
-		alpn_comma = hostname;
+	} else {
+		if (lws_hdr_copy(wsi, hostname, sizeof(hostname),
+				 _WSI_TOKEN_CLIENT_ALPN) > 0)
+			alpn_comma = hostname;
 #endif
+	}
 
 	lwsl_info("%s client conn using alpn list '%s'\n", wsi->role_ops->name, alpn_comma);
 
@@ -431,17 +435,8 @@ lws_ssl_client_bio_create(struct lws *wsi)
 		if (lws_system_blob_get_single_ptr(b, &data))
 			goto no_client_cert;
 
-		if (SSL_use_certificate_ASN1(wsi->tls.ssl,
-#if defined(USE_WOLFSSL)
-			(unsigned char *)
-#endif
-					data,
-#if defined(LWS_WITH_BORINGSSL)
-					(size_t)
-#else
-					(int)
-#endif
-					size) != 1) {
+		if (SSL_use_certificate_ASN1(wsi->tls.ssl, SSL_DATA_CAST(data),
+			SSL_SIZE_CAST(size)) != 1) {
 			lwsl_err("%s: use_certificate failed\n", __func__);
 			lws_tls_err_describe_clear();
 			goto no_client_cert;
@@ -460,29 +455,11 @@ lws_ssl_client_bio_create(struct lws *wsi)
 		if (lws_system_blob_get_single_ptr(b, &data))
 			goto no_client_cert;
 
-		if (SSL_use_PrivateKey_ASN1(EVP_PKEY_RSA, wsi->tls.ssl,
-#if defined(USE_WOLFSSL)
-			(unsigned char *)
-#endif
+		if (SSL_use_PrivateKey_ASN1(EVP_PKEY_RSA, wsi->tls.ssl, SSL_DATA_CAST(data),
+			SSL_SIZE_CAST(size)) != 1 &&
+		    SSL_use_PrivateKey_ASN1(EVP_PKEY_EC, wsi->tls.ssl, SSL_DATA_CAST(data),
+			SSL_SIZE_CAST(size)) != 1) {
 
-					    data,
-#if defined(LWS_WITH_BORINGSSL)
-					(size_t)
-#else
-					(int)
-#endif
-					    size) != 1 &&
-		    SSL_use_PrivateKey_ASN1(EVP_PKEY_EC, wsi->tls.ssl,
-#if defined(USE_WOLFSSL)
-			(unsigned char *)
-#endif
-					    data,
-#if defined(LWS_WITH_BORINGSSL)
-					(size_t)
-#else
-					(int)
-#endif
-					    size) != 1) {
 			lwsl_err("%s: use_privkey failed\n", __func__);
 			lws_tls_err_describe_clear();
 			goto no_client_cert;
@@ -554,7 +531,7 @@ lws_tls_client_connect(struct lws *wsi, char *errbuf, size_t elen)
 #if defined(LWS_HAVE_SSL_SESSION_set_time)
 		sess = SSL_get_session(wsi->tls.ssl);
 		if (sess) /* should always be true */
-#if defined(OPENSSL_IS_BORINGSSL)
+#if defined(OPENSSL_IS_BORINGSSL) || defined(LWS_WITH_AWSLC)
 			SSL_SESSION_set_time(sess, (uint64_t)time(NULL)); /* extend session lifetime */
 #else
 			SSL_SESSION_set_time(sess, (long)time(NULL)); /* extend session lifetime */
@@ -656,7 +633,7 @@ lws_tls_client_confirm_peer_cert(struct lws *wsi, char *ebuf, size_t ebuf_len)
 	}
 
 	es = ERR_error_string(
-	#if defined(LWS_WITH_BORINGSSL)
+	#if defined(LWS_WITH_BORINGSSL) || defined(LWS_WITH_AWSLC)
 					 (uint32_t)
 	#else
 					 (unsigned long)
@@ -749,14 +726,8 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 	if (!method) {
 		const char *es;
 
-		error = ERR_get_error();
-		es = ERR_error_string(
-		#if defined(LWS_WITH_BORINGSSL)
-			(uint32_t)
-		#else
-			(unsigned long)
-		#endif
-			 error, (char *)vh->context->pt[0].serv_buf);
+		error = ERR_peek_error();
+		es = ERR_error_string(ERR_get_error(), (char *)vh->context->pt[0].serv_buf);
 		lwsl_err("problem creating ssl method %lu: %s\n",
 			error, es);
 		return 1;
@@ -857,14 +828,8 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 	if (!vh->tls.ssl_client_ctx) {
 		const char *es;
 
-		error = ERR_get_error();
-		es = ERR_error_string(
-		#if defined(LWS_WITH_BORINGSSL)
-			(uint32_t)
-		#else
-			(unsigned long)
-		#endif
-			 error, (char *)vh->context->pt[0].serv_buf);
+		error = ERR_peek_error();
+		es = ERR_error_string(ERR_get_error(), (char *)vh->context->pt[0].serv_buf);
 		lwsl_err("problem creating ssl context %lu: %s\n",
 			error, es);
 		return 1;
@@ -895,6 +860,12 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 
 	vh->tls.tcr = tcr;
 
+#if defined(LWS_HAVE_SSL_CTX_set_keylog_callback) && \
+		defined(LWS_WITH_TLS) && !defined(LWS_WITHOUT_CLIENT)
+	if (vh->context->keylog_file[0])
+		SSL_CTX_set_keylog_callback(vh->tls.ssl_client_ctx, lws_klog_dump);
+#endif
+
 #if defined(LWS_WITH_TLS_SESSIONS)
 	vh->tls_session_cache_max = info->tls_session_cache_max ?
 				    info->tls_session_cache_max : 10;
@@ -912,64 +883,14 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 			 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
 			 SSL_MODE_RELEASE_BUFFERS);
 
-#if !defined(USE_WOLFSSL)
-#if defined(LWS_WITH_BORINGSSL)
-				uint32_t
-#else
-#if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && \
-	!defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
-		unsigned long
-#else
-		long
-#endif
-#endif
-#else
-		long
-#endif
-			ssl_client_options_set_value =
-#if !defined(USE_WOLFSSL)
-#if defined(LWS_WITH_BORINGSSL)
-				(uint32_t)
-#else
-#if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && \
-	!defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
-				(unsigned long)
-#else
-				(long)
-#endif
-#endif
-#endif
-			info->ssl_client_options_set;
+	SSL_OPT_TYPE ssl_client_options_set_value = (SSL_OPT_TYPE) info->ssl_client_options_set;
 
 	if (info->ssl_client_options_set)
 		SSL_CTX_set_options(vh->tls.ssl_client_ctx, ssl_client_options_set_value);
 
 #if (OPENSSL_VERSION_NUMBER >= 0x009080df) && !defined(USE_WOLFSSL)
-
 	/* SSL_clear_options introduced in 0.9.8m */
-#if defined(LWS_WITH_BORINGSSL)
-                uint32_t
-#else
-#if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && \
-	!defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
-		unsigned long
-#else
-		long
-#endif
-#endif
-
-			ssl_client_options_clear_value =
-#if defined(LWS_WITH_BORINGSSL)
-				(uint32_t)
-#else
-#if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && \
-	!defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
-				(unsigned long)
-#else
-				(long)
-#endif
-#endif
-			info->ssl_client_options_clear;
+	SSL_OPT_TYPE ssl_client_options_clear_value = (SSL_OPT_TYPE) info->ssl_client_options_clear;
 
 	if (info->ssl_client_options_clear)
 		SSL_CTX_clear_options(vh->tls.ssl_client_ctx, ssl_client_options_clear_value);
@@ -991,19 +912,6 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 #endif
 
 	/* openssl init for cert verification (for client sockets) */
-    if (!ca_mem || !ca_mem_len) {
-        for (int i = 0; i < MAX_CLIENT_SSL_CA_NUMBER; i++) {
-            if ((info->client_ssl_ca_dirs[i] != NULL) &&
-                (!SSL_CTX_load_verify_locations(vh->tls.ssl_client_ctx, NULL, info->client_ssl_ca_dirs[i]))) {
-                lwsl_err(
-                    "Unable to load SSL Client certs from %s "
-                    "(set by info->client_ssl_ca_dirs[%d]) -- "
-                    "client ssl isn't going to work\n",
-                    info->client_ssl_ca_dirs[i], i);
-            }
-        }
-    }
-
 	if (!ca_filepath && (!ca_mem || !ca_mem_len)) {
 #if defined(LWS_HAVE_SSL_CTX_load_verify_dir)
 		if (!SSL_CTX_load_verify_dir(
@@ -1112,13 +1020,7 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 			return 1;
 		}
 
-		n = SSL_CTX_use_certificate_ASN1(vh->tls.ssl_client_ctx,
-#if defined(LWS_WITH_BORINGSSL)
-				(size_t)
-#else
-				(int)
-#endif
-				flen, p);
+		n = SSL_CTX_use_certificate_ASN1(vh->tls.ssl_client_ctx, SSL_SIZE_CAST(flen), p);
 
 		if (n < 1) {
 			lwsl_err("%s: problem interpreting client cert\n",  __func__);
@@ -1164,7 +1066,7 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 		}
 
 		n = SSL_CTX_use_PrivateKey_ASN1(EVP_PKEY_RSA, vh->tls.ssl_client_ctx, p,
-#if defined(LWS_WITH_BORINGSSL)
+#if defined(LWS_WITH_BORINGSSL) || defined(LWS_WITH_AWSLC)
 				(size_t)
 #else
 				(long)(lws_intptr_t)
@@ -1173,7 +1075,7 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 		if (n != 1)
 			n = SSL_CTX_use_PrivateKey_ASN1(EVP_PKEY_EC,
 							vh->tls.ssl_client_ctx, p,
-#if defined(LWS_WITH_BORINGSSL)
+#if defined(LWS_WITH_BORINGSSL) || defined(LWS_WITH_AWSLC)
 				(size_t)
 #else
 				(long)(lws_intptr_t)
