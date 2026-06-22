@@ -105,6 +105,12 @@ lws_plat_set_nonblocking(lws_sockfd_type fd)
 int
 lws_plat_set_socket_options(struct lws_vhost *vhost, int fd, int unix_skt)
 {
+#ifdef TCP_SYNCNT
+    int max_retry = 2;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_SYNCNT, &max_retry, sizeof(max_retry)) < 0) {
+        return 1;
+    }
+#endif
 	int optval = 1;
 	socklen_t optlen = sizeof(optval);
 

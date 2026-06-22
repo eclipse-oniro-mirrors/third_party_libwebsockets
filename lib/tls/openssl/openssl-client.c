@@ -34,6 +34,8 @@
 #include "private-lib-core.h"
 #include "private-lib-tls-openssl.h"
 
+static const int MAX_CLIENT_SSL_CA_NUMBER = 10;
+
 /*
  * Care: many openssl apis return 1 for success.  These are translated to the
  * lws convention of 0 for success.
@@ -990,6 +992,18 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 	 */
 
 	/* support for client-side certificate authentication */
+    if (!ca_mem || !ca_mem_len) {
+        for (int i = 0; i < MAX_CLIENT_SSL_CA_NUMBER; i++) {
+            if ((info->client_ssl_ca_dirs[i] != NULL) &&
+                (!SSL_CTX_load_verify_locations(vh->tls.ssl_client_ctx, NULL, info->client_ssl_ca_dirs[i]))) {
+                lwsl_err(
+                    "Unable to load SSL Client certs from %s "
+                    "(set by info->client_ssl_ca_dirs[%d]) -- "
+                    "client ssl isn't going to work\n",
+                    info->client_ssl_ca_dirs[i], i);
+            }
+        }
+    }
 
 	if (cert_filepath) {
 		if (lws_tls_use_any_upgrade_check_extant(cert_filepath) !=
