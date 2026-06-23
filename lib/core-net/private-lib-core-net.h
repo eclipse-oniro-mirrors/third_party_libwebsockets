@@ -336,10 +336,6 @@ struct lws_context_per_thread {
 #if defined(LWS_WITH_PEER_LIMITS)
 	lws_sorted_usec_list_t sul_peer_limits;
 #endif
-#if defined(LWS_WITH_SEQUENCER)
-	lws_sorted_usec_list_t sul_seq_heartbeat;
-	lws_dll2_owner_t seq_owner;
-#endif
 
 #if !defined(LWS_PLAT_FREERTOS)
 	struct lws *fake_wsi;   /* used for callbacks where there's no wsi */
