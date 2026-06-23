@@ -65,7 +65,7 @@ extern "C" {
 
 
 /* place for one-shot opaque forward references */
-
+struct lws_sequencer;
 typedef struct lws_context * lws_ctx_t;
 struct lws_dsh;
 
