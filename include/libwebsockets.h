@@ -765,6 +765,7 @@ lws_fx_string(const lws_fx_t *a, char *buf, size_t size);
 #include <libwebsockets/lws-lwsac.h>
 #include <libwebsockets/lws-fts.h>
 #include <libwebsockets/lws-diskcache.h>
+#include <libwebsockets/lws-sequencer.h>
 #include <libwebsockets/lws-secure-streams.h>
 #include <libwebsockets/lws-secure-streams-serialization.h>
 #include <libwebsockets/lws-secure-streams-policy.h>
