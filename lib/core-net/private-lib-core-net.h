@@ -299,6 +299,7 @@ struct lws_context_per_thread {
 	pthread_t self;
 #endif
 	struct lws_dll2_owner dll_buflist_owner;  /* guys with pending rxflow */
+	struct lws_dll2_owner seq_owner;	   /* list of lws_sequencer-s */
 	lws_dll2_owner_t      attach_owner;	/* pending lws_attach */
 
 #if defined(LWS_WITH_SECURE_STREAMS)
@@ -311,6 +312,10 @@ struct lws_context_per_thread {
 #endif
 
 	struct lws_dll2_owner pt_sul_owner[LWS_COUNT_PT_SUL_OWNERS];
+
+#if defined (LWS_WITH_SEQUENCER)
+	lws_sorted_usec_list_t sul_seq_heartbeat;
+#endif
 
 	lws_dll2_owner_t pre_natal_wsi_owner; /* allocated wsi not yet bound to vh
 						 are kept on here until bound, so
@@ -330,6 +335,10 @@ struct lws_context_per_thread {
 #endif
 #if defined(LWS_WITH_PEER_LIMITS)
 	lws_sorted_usec_list_t sul_peer_limits;
+#endif
+#if defined(LWS_WITH_SEQUENCER)
+	lws_sorted_usec_list_t sul_seq_heartbeat;
+	lws_dll2_owner_t seq_owner;
 #endif
 
 #if !defined(LWS_PLAT_FREERTOS)
