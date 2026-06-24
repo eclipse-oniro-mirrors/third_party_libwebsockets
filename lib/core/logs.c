@@ -168,7 +168,9 @@ void
 __lws_lc_untag(struct lws_context *context, lws_lifecycle_t *lc)
 {
 	//lws_lifecycle_group_t *grp;
+#if defined(LWS_LOG_TAG_LIFECYCLE)
 	char buf[24];
+#endif
 
 	if (!lc->gutag[0]) { /* we never tagged this object... */
 		lwsl_cx_err(context, "%s never tagged", lc->gutag);
