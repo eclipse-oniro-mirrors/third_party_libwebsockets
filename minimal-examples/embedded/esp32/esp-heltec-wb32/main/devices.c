@@ -1,7 +1,7 @@
 /*
  * devices for ESP32 Heltec WB32
  *
- * Written in 2010-2020 by Andy Green <andy@warmcat.com>
+ * Written in 2010-2022 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -81,8 +81,10 @@ static const lws_pwm_ops_t pwm_ops = {
 static const lws_display_ssd1306_t disp = {
 	.disp = {
 		lws_display_ssd1306_ops,
-		.w			= 128,
-		.h			= 64
+		.ic = {
+			.wh_px = { { 128,0 },      { 64,0 } },
+			.wh_mm = { { 22,00000000 },  { 10,00000000 } },
+               },
 	},
 	.i2c				= (lws_i2c_ops_t *)&li2c,
 	.gpio				= &lws_gpio_plat,
@@ -96,7 +98,7 @@ static const lws_display_ssd1306_t disp = {
 
 static const lws_led_gpio_map_t lgm[] = {
 	{
-		.name			= "alert",
+		.name			= "red",
 		.gpio			= GPIO_NUM_25,
 		.pwm_ops		= &pwm_ops, /* managed by pwm */
 		.active_level		= 1,
@@ -203,7 +205,7 @@ init_plat_devices(struct lws_context *ctx)
 	lws_display_state_init(&lds, ctx, 10000, 20000, lls, &disp.disp);
 
 	lws_button_enable(bcs, 0, lws_button_get_bit(bcs, "user"));
-	lws_led_transition(lls, "alert", &lws_pwmseq_static_off,
+	lws_led_transition(lls, "red", &lws_pwmseq_static_off,
 					 &lws_pwmseq_static_on);
 
 	return 0;

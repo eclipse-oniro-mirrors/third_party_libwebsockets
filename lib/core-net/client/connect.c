@@ -68,7 +68,7 @@ lws_http_client_connect_via_info2(struct lws *wsi)
 #endif
 
 no_ah:
-	return lws_client_connect_2_dnsreq(wsi);
+	return lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(wsi);
 
 bail:
 #if defined(LWS_WITH_SOCKS5)
@@ -131,6 +131,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 	struct lws *wsi, *safe = NULL;
 	const struct lws_protocols *p;
 	const char *cisin[CIS_COUNT];
+	char buf_localport[8];
 	struct lws_vhost *vh;
 	int tsi;
 
@@ -176,7 +177,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 				if (!vh) { /* coverity */
 					lwsl_cx_err(i->context, "no vhost");
-					goto bail;
+					goto bail; /* this frees the wsi */
 				}
 				if (!strcmp(vh->name, "system"))
 					vh = vh->vhost_next;
@@ -234,7 +235,6 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 	else
 		wsi->keep_warm_secs = 5;
 
-	wsi->seq = i->seq;
 	wsi->flags = i->ssl_connection;
 
 	wsi->c_pri = i->priority;
@@ -358,7 +358,25 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 	cisin[CIS_PROTOCOL]	= i->protocol;
 	cisin[CIS_METHOD]	= i->method;
 	cisin[CIS_IFACE]	= i->iface;
+	lws_snprintf(buf_localport, sizeof(buf_localport), "%u", i->local_port);
+	cisin[CIS_LOCALPORT]	= buf_localport;
 	cisin[CIS_ALPN]		= i->alpn;
+	cisin[CIS_USERNAME]	= i->auth_username;
+	cisin[CIS_PASSWORD]	= i->auth_password;
+
+/*
+	lwsl_notice("%d\n", (int)(cisin[CIS_ADDRESS] ? (int)strlen(cisin[CIS_ADDRESS]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PATH] ? (int)strlen(cisin[CIS_PATH]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_HOST] ? (int)strlen(cisin[CIS_HOST]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_ORIGIN] ? (int)strlen(cisin[CIS_ORIGIN]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PROTOCOL] ? (int)strlen(cisin[CIS_PROTOCOL]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_METHOD] ? (int)strlen(cisin[CIS_METHOD]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_IFACE] ? (int)strlen(cisin[CIS_IFACE]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_LOCALPORT] ? (int)strlen(cisin[CIS_LOCALPORT]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_ALPN] ? (int)strlen(cisin[CIS_ALPN]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_USERNAME] ? (int)strlen(cisin[CIS_USERNAME]) : -1));
+	lwsl_notice("%d\n", (int)(cisin[CIS_PASSWORD] ? (int)strlen(cisin[CIS_PASSWORD]) : -1));
+*/
 
 	if (lws_client_stash_create(wsi, cisin))
 		goto bail;
@@ -490,7 +508,7 @@ lws_client_connect_via_info(const struct lws_client_connect_info *i)
 
 		wsi->tls.ssl = NULL;
 
-		if (wsi->tls.use_ssl & LCCSCF_USE_SSL) {
+		if (wsi->role_ops != &role_ops_raw_skt && (wsi->tls.use_ssl & LCCSCF_USE_SSL)) {
 			const char *cce = NULL;
 
 			switch (
@@ -537,6 +555,8 @@ bail3:
 #endif
 
 bail:
+	lws_dll2_remove(&wsi->pre_natal);
+
 #if defined(LWS_WITH_TLS)
 	if (wsi->tls.ssl)
 		lws_tls_restrict_return(wsi);

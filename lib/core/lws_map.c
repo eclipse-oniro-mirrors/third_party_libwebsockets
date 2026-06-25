@@ -29,11 +29,11 @@ typedef struct lws_map_hashtable {
 	lws_dll2_owner_t		ho;
 } lws_map_hashtable_t;
 
-typedef struct lws_map {
+struct lws_map {
 	lws_map_info_t			info;
 
 	/* array of info.modulo x lws_map_hashtable_t overallocated */
-} lws_map_t;
+};
 
 typedef struct lws_map_item {
 	lws_dll2_t			list; /* owned by hashtable */
@@ -88,10 +88,10 @@ lws_map_hash_from_key_default(const lws_map_key_t key, size_t kl)
 	const uint8_t *u = (const uint8_t *)key;
 
 	while (kl--)
-	h = ((
-		(((h & 0x1fffffff /* coverity */ ) << 7) |
-		 (h >> 25)) +
-		   0xa1b2c3d4) ^ (*u++)) ^ h;
+		h = ((
+			(((h & 0x1fffffff /* coverity */ ) << 7) |
+			 (h >> 25)) +
+		       0xa1b2c3d4) ^ (*u++)) ^ h;
 
 	return h;
 }

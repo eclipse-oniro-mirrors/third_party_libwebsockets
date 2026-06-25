@@ -47,11 +47,13 @@ lws_tls_openssl_asn1time_to_unix(ASN1_TIME *as)
 	memset(&t, 0, sizeof(t));
 
 	if (strlen(p) == 13) {
-		t.tm_year = (dec(p[0]) * 10) + dec(p[1]) + 100;
+		t.tm_year = (dec(p[0]) * 10) + dec(p[1]);
+		if (t.tm_year < 50) /* RFC5280: 13 char dates will break after 2049 */
+			t.tm_year += 100; /* struct tm year is -1900, this gives 2000..2049 */
 		p += 2;
 	} else {
-		t.tm_year = (dec(p[0]) * 1000) + (dec(p[1]) * 100) +
-			    (dec(p[2]) * 10) + dec(p[3]);
+		t.tm_year = ((dec(p[0]) * 1000) + (dec(p[1]) * 100) +
+			    (dec(p[2]) * 10) + dec(p[3])) - 1900; /* struct tm year is -1900 */
 		p += 4;
 	}
 	t.tm_mon = (dec(p[0]) * 10) + dec(p[1]) - 1;
@@ -89,7 +91,8 @@ lws_tls_openssl_cert_info(X509 *x509, enum lws_tls_cert_info type,
 #endif
 	X509_NAME *xn;
 #if !defined(LWS_PLAT_OPTEE)
-	char *p;
+	char *p, *p1;
+	size_t rl;
 #endif
 
 	buf->ns.len = 0;
@@ -128,8 +131,16 @@ lws_tls_openssl_cert_info(X509 *x509, enum lws_tls_cert_info type,
 			return -1;
 		X509_NAME_oneline(xn, buf->ns.name, (int)len - 2);
 		p = strstr(buf->ns.name, "/CN=");
-		if (p)
-			memmove(buf->ns.name, p + 4, strlen(p + 4) + 1);
+		if (p) {
+			p += 4;
+			p1 = strchr(p, '/');
+			if (p1)
+				rl = lws_ptr_diff_size_t(p1, p);
+			else
+				rl = strlen(p);
+			memmove(buf->ns.name, p, rl);
+			buf->ns.name[rl] = '\0';
+		}
 		buf->ns.len = (int)strlen(buf->ns.name);
 		return 0;
 #endif
@@ -248,7 +259,11 @@ lws_tls_openssl_cert_info(X509 *x509, enum lws_tls_cert_info type,
 		{
 			const X509V3_EXT_METHOD* method = X509V3_EXT_get(ext);
 			STACK_OF(CONF_VALUE) *cv;
+		#if defined(LWS_WITH_BORINGSSL) || defined(LWS_WITH_AWSLC)
+			size_t j;
+		#else
 			int j;
+		#endif
 
 			cv = i2v_GENERAL_NAMES((X509V3_EXT_METHOD*)method, akid->issuer, NULL);
 			if (!cv)
@@ -766,10 +781,10 @@ lws_x509_jwk_privkey_pem(struct lws_context *cx, struct lws_jwk *jwk,
 		/* then check that n & e match what we got from the cert */
 
 		dummy[2] = BN_bin2bn(jwk->e[LWS_GENCRYPTO_RSA_KEYEL_N].buf,
-				     (int32_t)jwk->e[LWS_GENCRYPTO_RSA_KEYEL_N].len,
+				     SSL_SIZE_CAST(jwk->e[LWS_GENCRYPTO_RSA_KEYEL_N].len),
 				     NULL);
 		dummy[3] = BN_bin2bn(jwk->e[LWS_GENCRYPTO_RSA_KEYEL_E].buf,
-				     (int32_t)jwk->e[LWS_GENCRYPTO_RSA_KEYEL_E].len,
+				     SSL_SIZE_CAST(jwk->e[LWS_GENCRYPTO_RSA_KEYEL_E].len),
 				     NULL);
 
 		m = BN_cmp(dummy[2], dummy[0]) | BN_cmp(dummy[3], dummy[1]);

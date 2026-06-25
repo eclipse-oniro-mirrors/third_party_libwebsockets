@@ -90,6 +90,7 @@ ohos_static_library("websockets") {
     "//third_party/libwebsockets/lib/roles/ws/server-ws.c",
     "//third_party/libwebsockets/lib/system/smd/smd.c",
     "//third_party/libwebsockets/lib/system/system.c",
+    "//third_party/libwebsockets/lib/system/stdin.c",
     "//third_party/libwebsockets/lib/tls/openssl/openssl-client.c",
     "//third_party/libwebsockets/lib/tls/openssl/openssl-server.c",
     "//third_party/libwebsockets/lib/tls/openssl/openssl-session.c",
@@ -378,6 +379,7 @@ ohos_static_library("websockets_static") {
     "//third_party/libwebsockets/lib/roles/ws/ops-ws.c",
     "//third_party/libwebsockets/lib/roles/ws/server-ws.c",
     "//third_party/libwebsockets/lib/system/system.c",
+    "//third_party/libwebsockets/lib/system/stdin.c",
   ]
   if (platform == "mingw_x86_64") {
     sources += [

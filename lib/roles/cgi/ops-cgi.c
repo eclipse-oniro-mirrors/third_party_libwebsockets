@@ -24,7 +24,7 @@
 
 #include <private-lib-core.h>
 
-static int
+static lws_handling_result_t
 rops_handle_POLLIN_cgi(struct lws_context_per_thread *pt, struct lws *wsi,
 		       struct lws_pollfd *pollfd)
 {
@@ -34,11 +34,11 @@ rops_handle_POLLIN_cgi(struct lws_context_per_thread *pt, struct lws *wsi,
 
 	if (wsi->lsp_channel >= LWS_STDOUT &&
 	    !(pollfd->revents & pollfd->events & LWS_POLLIN))
-		return LWS_HPI_RET_HANDLED;
+		return LWS_HPI_RET_PLEASE_CLOSE_ME;
 
 	if (wsi->lsp_channel == LWS_STDIN &&
 	    !(pollfd->revents & pollfd->events & LWS_POLLOUT))
-		return LWS_HPI_RET_HANDLED;
+		return LWS_HPI_RET_PLEASE_CLOSE_ME;
 
 	if (wsi->lsp_channel == LWS_STDIN &&
 	    lws_change_pollfd(wsi, LWS_POLLOUT, 0)) {
@@ -80,7 +80,7 @@ rops_handle_POLLIN_cgi(struct lws_context_per_thread *pt, struct lws *wsi,
 	return LWS_HPI_RET_HANDLED;
 }
 
-static int
+static lws_handling_result_t
 rops_handle_POLLOUT_cgi(struct lws *wsi)
 {
 	return LWS_HP_RET_USER_SERVICE;

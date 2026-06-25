@@ -25,6 +25,62 @@
 #include "private-lib-core.h"
 #include <errno.h>
 
+const char *
+lws_errno_describe(int en, char *result, size_t len)
+{
+#if !defined(WIN32)
+	switch (en) {
+	case EAGAIN:
+		return "EAGAIN";
+	case EALREADY:
+		return "EALREADY";
+	case EINPROGRESS:
+		return "EINPROGRESS";
+	case EINTR:
+		return "EINTR";
+	case EISCONN:
+		return "EISCONN";
+	case ENOTCONN:
+		return "ENOTCONN";
+	case EADDRINUSE:
+		return "EADDRINUSE";
+	case EHOSTUNREACH:
+		return "EHOSTUNREACH";
+	case ECONNREFUSED:
+		return "ECONNREFUSED";
+	default:
+		break;
+	}
+	lws_snprintf(result, len, "errno %d", en);
+
+	return result;
+#else
+	switch (en) {
+	case WSAEISCONN:
+		return "WSAEISCONN";
+	case WSAEALREADY:
+		return "WSAEALREADY";
+	case WSAEINVAL:
+		return "WSAEINVAL";
+	case WSAENETUNREACH:
+		return "WSAENETUNREACH";
+	case WSAECONNABORTED:
+		return "WSAECONNABORTED";
+	case WSAECONNRESET:
+		return "WSAECONNRESET";
+	case WSAETIMEDOUT:
+		return "WSAETIMEDOUT";
+	case WSAECONNREFUSED:
+		return "WSAECONNREFUSED";
+	default:
+		break;
+	}
+	lws_snprintf(result, len, "wsaerrno %d", en);
+
+	return result;
+#endif
+}
+
 #if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE)
 static int
 interface_to_sa(struct lws_vhost *vh, const char *ifname,
@@ -58,7 +114,11 @@ lws_get_addresses(struct lws_vhost *vh, void *ads, char *name,
 		if (!lws_plat_inet_ntop(AF_INET6,
 					&((struct sockaddr_in6 *)ads)->sin6_addr,
 					rip, (socklen_t)rip_len)) {
-			lwsl_vhost_err(vh, "inet_ntop: %s", strerror(LWS_ERRNO));
+#if !defined(LWS_WITH_NO_LOGS)
+			char t16[16];
+			lwsl_vhost_err(vh, "inet_ntop: %s",
+				lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
+#endif
 			return -1;
 		}
 
@@ -132,8 +192,10 @@ lws_get_peer_simple_fd(lws_sockfd_type fd, char *name, size_t namelen)
 	socklen_t len = sizeof(sa46);
 
 	if (getpeername(fd, (struct sockaddr *)&sa46, &len) < 0) {
+		char t16[16];
+
 		lws_snprintf(name, namelen, "getpeername: %s",
-				strerror(LWS_ERRNO));
+				lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
 		return name;
 	}
 
@@ -177,7 +239,12 @@ lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
 	}
 
 	if (getpeername(fd, p, &len) < 0) {
-		lwsl_wsi_warn(wsi, "getpeername: %s", strerror(LWS_ERRNO));
+#if !defined(LWS_WITH_NO_LOGS)
+		char t16[16];
+
+		lwsl_wsi_warn(wsi, "getpeername: %s",
+			lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
+#endif
 		goto bail;
 	}
 
@@ -245,7 +312,7 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 			return LWS_ITOSA_NOT_EXIST;
 		}
 		n = (int)(sizeof(uint16_t) + strlen(iface));
-		strcpy(serv_unix.sun_path, iface);
+		lws_strncpy(serv_unix.sun_path, iface, sizeof(serv_unix.sun_path) - 1);
 		if (serv_unix.sun_path[0] == '@')
 			serv_unix.sun_path[0] = '\0';
 		else
@@ -314,21 +381,40 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 	/* just checking for the interface extant */
 	if (sockfd == LWS_SOCK_INVALID)
 		return LWS_ITOSA_USABLE;
+#if defined(LWS_WITH_BINDTODEVICE)
+	if (af != AF_UNIX && iface) {
+		if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, iface, (socklen_t)strlen(iface)) < 0) {
+#if !defined(LWS_WITH_NO_LOGS)
+			int _lws_errno = LWS_ERRNO;
+			lwsl_wsi_warn(wsi, "setsockopt bind to device %s error fd %d (%d)",
+					  iface, sockfd, _lws_errno);
+#endif
+	/* Root only, non-fatal, continue here. */
+		}
+	}
+#endif
 
 	n = bind(sockfd, v, (socklen_t)n);
 #ifdef LWS_WITH_UNIX_SOCK
 	if (n < 0 && af == AF_UNIX) {
-		lwsl_wsi_err(wsi, "ERROR on binding fd %d to \"%s\" (%d %d)",
-				  sockfd, iface, n, LWS_ERRNO);
-
+#if !defined(LWS_WITH_NO_LOGS)
+		char t16[16];
+		lwsl_wsi_err(wsi, "ERROR on binding fd %d to \"%s\" (%s)",
+				  sockfd, iface,
+				lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
+#endif
 		return LWS_ITOSA_NOT_EXIST;
 	} else
 #endif
 	if (n < 0) {
 		int _lws_errno = LWS_ERRNO;
+#if !defined(LWS_WITH_NO_LOGS)
+		char t16[16];
 
-		lwsl_wsi_err(wsi, "ERROR on binding fd %d to port %d (%d %d)",
-				  sockfd, port, n, _lws_errno);
+		lwsl_wsi_err(wsi, "ERROR on binding fd %d to port %d (%s)",
+			     sockfd, port,
+			     lws_errno_describe(_lws_errno, t16, sizeof(t16)));
+#endif
 
 		/* if something already listening, tell caller to fail permanently */
 
@@ -366,7 +452,7 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 					      (unsigned int)uid,
 					      (unsigned int)gid);
 
-			if (chmod(iface, 0660)) {
+			if (chmod(iface, 0660)) { /* lgtm [cpp/toctou-race-condition] */
 				lwsl_wsi_err(wsi, "0600 mode on %s fail", iface);
 
 				return LWS_ITOSA_NOT_EXIST;
@@ -376,9 +462,14 @@ lws_socket_bind(struct lws_vhost *vhost, struct lws *wsi,
 #endif
 
 #ifndef LWS_PLAT_OPTEE
-	if (getsockname(sockfd, (struct sockaddr *)psin, &len) == -1)
-		lwsl_wsi_warn(wsi, "getsockname: %s", strerror(LWS_ERRNO));
-	else
+	if (getsockname(sockfd, (struct sockaddr *)psin, &len) == -1) {
+#if !defined(LWS_WITH_NO_LOGS)
+		char t16[16];
+
+		lwsl_wsi_warn(wsi, "getsockname: %s",
+			      lws_errno_describe(LWS_ERRNO, t16, sizeof(t16)));
+#endif
+	} else
 #endif
 #if defined(LWS_WITH_IPV6)
 		port = (sin.ss_family == AF_INET6) ?
@@ -1025,3 +1116,62 @@ lws_system_get_state_manager(struct lws_context *context)
 	return &context->mgr_system;
 }
 #endif
+
+int
+lws_parse_mac(const char *ads, uint8_t *result_6_bytes)
+{
+	uint8_t *p = result_6_bytes;
+	struct lws_tokenize ts;
+	char t[3];
+	size_t n;
+	long u;
+
+	lws_tokenize_init(&ts, ads, LWS_TOKENIZE_F_NO_INTEGERS |
+				    LWS_TOKENIZE_F_MINUS_NONTERM);
+	ts.len = strlen(ads);
+
+	do {
+		ts.e = (int8_t)lws_tokenize(&ts);
+		switch (ts.e) {
+		case LWS_TOKZE_TOKEN:
+			if (ts.token_len != 2)
+				return -1;
+			if (p - result_6_bytes == 6)
+				return -2;
+			t[0] = ts.token[0];
+			t[1] = ts.token[1];
+			t[2] = '\0';
+			for (n = 0; n < 2; n++)
+				if (t[n] < '0' || t[n] > 'f' ||
+				    (t[n] > '9' && t[n] < 'A') ||
+				    (t[n] > 'F' && t[n] < 'a'))
+					return -1;
+			u = strtol(t, NULL, 16);
+			if (u > 0xff)
+				return -5;
+			*p++ = (uint8_t)u;
+			break;
+
+		case LWS_TOKZE_DELIMITER:
+			if (*ts.token != ':')
+				return -10;
+			if (p - result_6_bytes > 5)
+				return -11;
+			break;
+
+		case LWS_TOKZE_ENDED:
+			if (p - result_6_bytes != 6)
+				return -12;
+			return 0;
+
+		default:
+			lwsl_err("%s: malformed mac\n", __func__);
+
+			return -13;
+		}
+	} while (ts.e > 0);
+
+	lwsl_err("%s: ended on e %d\n", __func__, ts.e);
+
+	return -14;
+}

@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -126,6 +126,30 @@ struct addrinfo *sort_dns(struct addrinfo *res)
     return result;
 }
 
+#if defined(WIN32)
+
+/*
+ * Windows doesn't offer a Posix connect() event... we use a sul
+ * to check the connection status periodically while a connection
+ * is ongoing.
+ *
+ * Leaving this to POLLOUT to retry which is the way for Posix
+ * platforms instead on win32 causes event-loop busywaiting
+ * so for win32 we manage the retry interval directly with the sul.
+ */
+
+void
+lws_client_win32_conn_async_check(lws_sorted_usec_list_t *sul)
+{
+	struct lws *wsi = lws_container_of(sul, struct lws,
+					   win32_sul_connect_async_check);
+
+	lwsl_wsi_debug(wsi, "checking ongoing connection attempt");
+	lws_client_connect_3_connect(wsi, NULL, NULL, 0, NULL);
+}
+
+#endif
+
 void
 lws_client_conn_wait_timeout(lws_sorted_usec_list_t *sul)
 {
@@ -154,7 +178,8 @@ lws_client_dns_retry_timeout(lws_sorted_usec_list_t *sul)
 	 */
 
 	lwsl_wsi_info(wsi, "dns retry");
-	(void)lws_client_connect_2_dnsreq(wsi);
+	if (!lws_client_connect_2_dnsreq_MAY_CLOSE_WSI(wsi))
+		lwsl_notice("DNS lookup failed");
 }
 
 /*
@@ -174,6 +199,9 @@ typedef enum {
 static lcccr_t
 lws_client_connect_check(struct lws *wsi, int *real_errno)
 {
+#if !defined(LWS_WITH_NO_LOGS)
+	char t16[16];
+#endif
 	int en = 0;
 #if !defined(WIN32)
 	int e;
@@ -189,53 +217,58 @@ lws_client_connect_check(struct lws *wsi, int *real_errno)
 
 #if !defined(WIN32)
 	if (!getsockopt(wsi->desc.sockfd, SOL_SOCKET, SO_ERROR, &e, &sl)) {
+
 		en = LWS_ERRNO;
 		if (!e) {
-			lwsl_wsi_debug(wsi, "getsockopt: conn OK errno %d", en);
+			lwsl_wsi_debug(wsi, "getsockopt: conn OK errno %s",
+					lws_errno_describe(en, t16, sizeof(t16)));
 
 			return LCCCR_CONNECTED;
 		}
 
-		lwsl_wsi_notice(wsi, "getsockopt fd %d says e %d",
-							wsi->desc.sockfd, e);
+		lwsl_wsi_notice(wsi, "getsockopt fd %d says %s", wsi->desc.sockfd,
+				lws_errno_describe(e, t16, sizeof(t16)));
 
 		*real_errno = e;
 
 		return LCCCR_FAILED;
 	}
-
 #else
+	fd_set write_set, except_set;
+	struct timeval tv;
+	int ret;
 
-	if (!connect(wsi->desc.sockfd, (const struct sockaddr *)&wsi->sa46_peer.sa4,
-#if defined(WIN32)
-				sizeof(struct sockaddr)))
-#else
-				0))
-#endif
+	FD_ZERO(&write_set);
+	FD_ZERO(&except_set);
+	FD_SET(wsi->desc.sockfd, &write_set);
+	FD_SET(wsi->desc.sockfd, &except_set);
 
+	tv.tv_sec = 0;
+	tv.tv_usec = 0;
+
+	ret = select((int)wsi->desc.sockfd + 1, NULL, &write_set, &except_set, &tv);
+	if (FD_ISSET(wsi->desc.sockfd, &write_set)) {
+		/* actually connected */
+		lwsl_wsi_debug(wsi, "select write fd set, conn OK");
 		return LCCCR_CONNECTED;
-
-	en = LWS_ERRNO;
-
-	if (en == WSAEISCONN) /* already connected */
-		return LCCCR_CONNECTED;
-
-	if (en == WSAEALREADY) {
-		/* reset the POLLOUT wait */
-		if (lws_change_pollfd(wsi, 0, LWS_POLLOUT))
-			lwsl_wsi_notice(wsi, "pollfd failed");
 	}
 
-	if (!en || en == WSAEINVAL ||
-		   en == WSAEWOULDBLOCK ||
-		   en == WSAEALREADY) {
-		lwsl_wsi_debug(wsi, "errno %d", en);
+	if (FD_ISSET(wsi->desc.sockfd, &except_set)) {
+		/* Failed to connect */
+		lwsl_wsi_notice(wsi, "connect failed, select exception fd set");
+		return LCCCR_FAILED;
+	}
+
+	if (!ret) {
+		lwsl_wsi_debug(wsi, "select timeout");
 		return LCCCR_CONTINUE;
 	}
+
+	en = LWS_ERRNO;
 #endif
 
-	lwsl_wsi_notice(wsi, "connect check FAILED: %d",
-			*real_errno || en);
+	lwsl_wsi_notice(wsi, "connection check FAILED: %s",
+			lws_errno_describe(*real_errno || en, t16, sizeof(t16)));
 
 	return LCCCR_FAILED;
 }
@@ -255,17 +288,17 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 	struct sockaddr_un sau;
 #endif
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
-	const char *cce = "Unable to connect", *iface;
+	const char *cce = "Unable to connect", *iface, *local_port;
 	const struct sockaddr *psa = NULL;
 	uint16_t port = wsi->conn_port;
+	char dcce[128], t16[16];
 	lws_dns_sort_t *curr;
 	ssize_t plen = 0;
 	lws_dll2_t *d;
-	char dcce[48];
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 	int cfail;
 #endif
-	int m, af = 0;
+	int m, af = 0, en;
 
 	/*
 	 * If we come here with result set, we need to convert getaddrinfo
@@ -283,7 +316,6 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 		/* append a copy from before the sorting */
 		lws_conmon_append_copy_new_dns_results(wsi, result);
 #endif
-
 		result = sort_dns((struct addrinfo *)result);
 		lws_sort_dns(wsi, result);
 #if defined(LWS_WITH_SYS_ASYNC_DNS)
@@ -319,7 +351,7 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 		 */
 
 		lwsi_set_state(wsi, LRS_UNCONNECTED);
-		lws_sul_schedule(wsi->a.context, 0, &wsi->sul_connect_timeout,
+		lws_sul_schedule(wsi->a.context, wsi->tsi, &wsi->sul_connect_timeout,
 				 lws_client_dns_retry_timeout,
 						 LWS_USEC_PER_SEC);
 		return wsi;
@@ -336,7 +368,6 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 
 	if (lwsi_state(wsi) == LRS_WAITING_CONNECT &&
 	    lws_socket_is_valid(wsi->desc.sockfd)) {
-
 		if (!wsi->dns_sorted_list.count &&
 		    !wsi->sul_connect_timeout.list.owner)
 			/* no dns results and no ongoing timeout for one */
@@ -357,12 +388,19 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 			 */
 			goto conn_good;
 		case LCCCR_CONTINUE:
+#if defined(WIN32)
+			lws_sul_schedule(wsi->a.context, 0, &wsi->win32_sul_connect_async_check,
+				lws_client_win32_conn_async_check,
+				wsi->a.context->win32_connect_check_interval_usec);
+#endif
+
 			return NULL;
+
 		default:
 			if (!real_errno)
 				real_errno = LWS_ERRNO;
-			lws_snprintf(dcce, sizeof(dcce), "conn fail: %d",
-				     real_errno);
+			lws_snprintf(dcce, sizeof(dcce), "conn fail: %s",
+				     lws_errno_describe(real_errno, t16, sizeof(t16)));
 
 			cce = dcce;
 			lwsl_wsi_debug(wsi, "%s", dcce);
@@ -376,7 +414,7 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 	if (ads && *ads == '+') {
 		ads++;
 		memset(&wsi->sa46_peer, 0, sizeof(wsi->sa46_peer));
-		af = sau.sun_family = AF_UNIX;
+		sau.sun_family = AF_UNIX;
 		strncpy(sau.sun_path, ads, sizeof(sau.sun_path));
 		sau.sun_path[sizeof(sau.sun_path) - 1] = '\0';
 
@@ -455,7 +493,6 @@ ads_known:
 		}
 
 #if defined(LWS_WITH_UNIX_SOCK)
-		af = 0;
 		if (wsi->unix_skt) {
 			af = AF_UNIX;
 			wsi->desc.sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -469,9 +506,11 @@ ads_known:
 		}
 
 		if (!lws_socket_is_valid(wsi->desc.sockfd)) {
+			en = LWS_ERRNO;
+
 			lws_snprintf(dcce, sizeof(dcce),
-				     "conn fail: skt creation: errno %d",
-								LWS_ERRNO);
+				     "conn fail: skt creation: %s",
+				     lws_errno_describe(en, t16, sizeof(t16)));
 			cce = dcce;
 			lwsl_wsi_warn(wsi, "%s", dcce);
 			goto try_next_dns_result;
@@ -483,9 +522,11 @@ ads_known:
 #else
 						0)) {
 #endif
+			en = LWS_ERRNO;
+
 			lws_snprintf(dcce, sizeof(dcce),
-				     "conn fail: skt options: errno %d",
-								LWS_ERRNO);
+				     "conn fail: skt options: %s",
+				     lws_errno_describe(en, t16, sizeof(t16)));
 			cce = dcce;
 			lwsl_wsi_warn(wsi, "%s", dcce);
 			goto try_next_dns_result_closesock;
@@ -545,9 +586,12 @@ ads_known:
 		iface = lws_wsi_client_stash_item(wsi, CIS_IFACE,
 						  _WSI_TOKEN_CLIENT_IFACE);
 
-		if (iface && *iface) {
+		local_port = lws_wsi_client_stash_item(wsi, CIS_LOCALPORT,
+						  _WSI_TOKEN_CLIENT_LOCALPORT);
+
+		if ((iface && *iface) || (local_port && atoi(local_port))) {
 			m = lws_socket_bind(wsi->a.vhost, wsi, wsi->desc.sockfd,
-					    0, iface, af);
+					    (local_port ? atoi(local_port) : 0), iface, af);
 			if (m < 0) {
 				lws_snprintf(dcce, sizeof(dcce),
 					     "conn fail: socket bind");
@@ -606,6 +650,13 @@ ads_known:
 		goto failed1;
 	}
 
+	{
+		char buf[64];
+
+		lws_sa46_write_numeric_address((lws_sockaddr46 *)psa, buf, sizeof(buf));
+		lwsl_wsi_info(wsi, "trying %s", buf);
+	}
+
 #if defined(LWS_WITH_SYS_FAULT_INJECTION)
 	cfail = lws_fi(&wsi->fic, "connfail");
 	if (cfail)
@@ -636,8 +687,9 @@ ads_known:
 			errno_copy = 999;
 #endif
 
-		lwsl_wsi_debug(wsi, "connect: fd %d errno: %d",
-				wsi->desc.sockfd, errno_copy);
+		lwsl_wsi_debug(wsi, "connect: fd %d, %s",
+				wsi->desc.sockfd,
+				lws_errno_describe(errno_copy, t16, sizeof(t16)));
 
 		if (errno_copy &&
 		    errno_copy != LWS_EALREADY &&
@@ -670,8 +722,9 @@ ads_known:
 						       sizeof(nads));
 
 			lws_snprintf(dcce, sizeof(dcce),
-				     "conn fail: errno %d: %s:%d",
-						errno_copy, nads, port);
+				     "conn fail: %s: %s:%d",
+				     lws_errno_describe(errno_copy, t16, sizeof(t16)),
+				     nads, port);
 			cce = dcce;
 
 			wsi->sa46_peer.sa4.sin_family = 0;
@@ -679,8 +732,8 @@ ads_known:
 #if defined(LWS_WITH_UNIX_SOCK)
 			} else {
 				lws_snprintf(dcce, sizeof(dcce),
-					     "conn fail: errno %d: UDS %s",
-							       errno_copy, ads);
+					     "conn fail: %s: UDS %s",
+					     lws_errno_describe(errno_copy, t16, sizeof(t16)), ads);
 				cce = dcce;
 			}
 #endif
@@ -703,17 +756,29 @@ ads_known:
 		 * uses wsi->sul_connect_timeout just for this purpose
 		 */
 
-		lws_sul_schedule(wsi->a.context, 0, &wsi->sul_connect_timeout,
+		lws_sul_schedule(wsi->a.context, wsi->tsi, &wsi->sul_connect_timeout,
 				 lws_client_conn_wait_timeout,
 				 wsi->a.context->timeout_secs *
 						 LWS_USEC_PER_SEC);
-
+#if defined(WIN32)
 		/*
-		 * must do specifically a POLLOUT poll to hear
-		 * about the connect completion
+		 * Windows is not properly POSIX, we have to manually schedule a
+		 * callback to poll checking its status
 		 */
+
+		lws_sul_schedule(wsi->a.context, 0, &wsi->win32_sul_connect_async_check,
+				 lws_client_win32_conn_async_check,
+				 wsi->a.context->win32_connect_check_interval_usec
+		);
+#else
+		/*
+		 * POSIX platforms must do specifically a POLLOUT poll to hear
+		 * about the connect completion as a POLLOUT event
+		 */
+
 		if (lws_change_pollfd(wsi, 0, LWS_POLLOUT))
 			goto try_next_dns_result_fds;
+#endif
 
 		return wsi;
 	}
@@ -737,8 +802,10 @@ conn_good:
 #endif
 		if (getsockname((int)wsi->desc.sockfd,
 				(struct sockaddr *)&wsi->sa46_local,
-				&salen) == -1)
-			lwsl_warn("getsockname: %s\n", strerror(LWS_ERRNO));
+				&salen) == -1) {
+			en = LWS_ERRNO;
+			lwsl_warn("getsockname: %s\n", lws_errno_describe(en, t16, sizeof(t16)));
+		}
 #if defined(_DEBUG)
 #if defined(LWS_WITH_UNIX_SOCK)
 		if (wsi->unix_skt)
@@ -751,8 +818,10 @@ conn_good:
 #endif
 	}
 #endif
-
 	lws_sul_cancel(&wsi->sul_connect_timeout);
+#if defined(WIN32)
+	lws_sul_cancel(&wsi->win32_sul_connect_async_check);
+#endif
 	lws_metrics_caliper_report(wsi->cal_conn, METRES_GO);
 
 	lws_addrinfo_clean(wsi);
@@ -823,6 +892,9 @@ try_next_dns_result_closesock:
 
 try_next_dns_result:
 	lws_sul_cancel(&wsi->sul_connect_timeout);
+#if defined(WIN32)
+	lws_sul_cancel(&wsi->win32_sul_connect_async_check);
+#endif
 	if (lws_dll2_get_head(&wsi->dns_sorted_list))
 		goto next_dns_result;
 
@@ -830,6 +902,7 @@ try_next_dns_result:
 	lws_inform_client_conn_fail(wsi, (void *)cce, strlen(cce));
 
 failed1:
+	lws_sul_cancel(&wsi->sul_connect_timeout);
 	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "client_connect3");
 
 	return NULL;

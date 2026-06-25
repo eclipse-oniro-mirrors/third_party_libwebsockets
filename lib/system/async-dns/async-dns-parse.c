@@ -35,7 +35,10 @@ lws_adns_parse_label(const uint8_t *pkt, int len, const uint8_t *ls, int budget,
 	const uint8_t *e = pkt + len, *ols = ls;
 	char pointer = 0, first = 1;
 	uint8_t ll;
-	int n;
+	int n, readsize = 0;
+
+	if (len < DHO_SIZEOF || len > 1500)
+		return -1;
 
 	if (budget < 1)
 		return 0;
@@ -82,13 +85,15 @@ again1:
 		return -1;
 	}
 
-	if (ls + ll > ols + budget) {
-		lwsl_notice("%s: label too long %d vs %d\n", __func__, ll, budget);
+	if (ll > lws_ptr_diff_size_t(ls, ols) + (size_t)budget) {
+		lwsl_notice("%s: label too long %d vs %d (rem budget %d)\n",
+				__func__, ll, budget,
+				(int)(lws_ptr_diff_size_t(ls, ols) + (size_t)budget));
 
 		return -1;
 	}
 
-	if ((unsigned int)ll + 2 > dl) {
+	if ((unsigned int)(ll + 2 + readsize) > dl) {
 		lwsl_notice("%s: qname too large\n", __func__);
 
 		return -1;
@@ -101,6 +106,7 @@ again1:
 	(*dest)[ll + 1] = '\0';
 	*dest += ll + 1;
 	ls += ll;
+	readsize += ll + 1;
 
 	if (pointer) {
 		if (*ls)
@@ -133,7 +139,7 @@ typedef int (*lws_async_dns_find_t)(const char *name, void *opaque,
 /* locally query the response packet */
 
 struct label_stack {
-	char name[DNS_MAX];
+	char name[DNS_MAX + 10];
 	int enl;
 	const uint8_t *p;
 };
@@ -154,11 +160,14 @@ lws_adns_iterate(lws_adns_q_t *q, const uint8_t *pkt, int len,
 		 const char *expname, lws_async_dns_find_t cb, void *opaque)
 {
 	const uint8_t *e = pkt + len, *p, *pay;
-	struct label_stack stack[4];
+	struct label_stack stack[8];
 	int n = 0, stp = 0, ansc, m;
 	uint16_t rrtype, rrpaylen;
 	char *sp, inq;
 	uint32_t ttl;
+
+	if (len < DHO_SIZEOF || len > 1500)
+		return -1;
 
 	lws_strncpy(stack[0].name, expname, sizeof(stack[0].name));
 	stack[0].enl = (int)strlen(expname);
@@ -203,7 +212,7 @@ start:
 
 		/* while we have more labels */
 
-		n = lws_adns_parse_label(pkt, len, p, len, &sp,
+		n = lws_adns_parse_label(pkt, len, p, len - DHO_SIZEOF, &sp,
 					 sizeof(stack[0].name) -
 					 lws_ptr_diff_size_t(sp, stack[0].name));
 		/* includes case name won't fit */
@@ -399,6 +408,7 @@ skip:
 	q->sent[1] = 0;
 #endif
 	q->sent[0] = 0;
+	q->is_synthetic = 0;
 	q->recursion++;
 	if (q->recursion == DNS_RECURSION_LIMIT) {
 		lwsl_err("%s: recursion overflow\n", __func__);
@@ -424,7 +434,8 @@ skip:
 		*cp = '\0';
 	}
 
-	lws_callback_on_writable(q->dns->wsi);
+	if (q->dsrv && q->dsrv->wsi)
+		lws_callback_on_writable(q->dsrv->wsi);
 
 	return 2;
 }
@@ -542,7 +553,7 @@ lws_adns_parse_udp(lws_async_dns_t *dns, const uint8_t *pkt, size_t len)
 
 	/* we have to at least have the header */
 
-	if (len < DHO_SIZEOF)
+	if (len < DHO_SIZEOF || len > 1500)
 		return;
 
 	/* we asked with one query, so anything else is bogus */
@@ -552,8 +563,7 @@ lws_adns_parse_udp(lws_async_dns_t *dns, const uint8_t *pkt, size_t len)
 
 	/* match both A and AAAA queries if any */
 
-	q = lws_adns_get_query(dns, 0, &dns->waiting,
-			       lws_ser_ru16be(pkt + DHO_TID), NULL);
+	q = lws_adns_get_query(dns, 0, lws_ser_ru16be(pkt + DHO_TID), NULL);
 	if (!q) {
 		lwsl_info("%s: dropping unknown query tid 0x%x\n",
 			    __func__, lws_ser_ru16be(pkt + DHO_TID));
@@ -566,7 +576,7 @@ lws_adns_parse_udp(lws_async_dns_t *dns, const uint8_t *pkt, size_t len)
 	n = 1 << (lws_ser_ru16be(pkt + DHO_TID) & 1);
 	if (q->responded & n) {
 		lwsl_notice("%s: dup\n", __func__);
-		goto fail_out;
+		return;
 	}
 
 	q->responded = (uint8_t)(q->responded | n);

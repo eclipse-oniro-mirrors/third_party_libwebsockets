@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2023 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -26,6 +26,10 @@
 #define _GNU_SOURCE
 #endif
 #include "private-lib-core.h"
+
+#if defined(LWS_HAVE_LINUX_IPV6_H)
+#include <linux/ipv6.h>
+#endif
 
 #include <sys/ioctl.h>
 
@@ -177,7 +181,7 @@ lws_plat_set_socket_options(struct lws_vhost *vhost, int fd, int unix_skt)
 
 	/* Disable Nagle */
 	optval = 1;
-#if defined (__sun) || defined(__QNX__)
+#if defined (__sun) || defined(__QNX__) || defined(__NuttX__)
 	if (!unix_skt && setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const void *)&optval, optlen) < 0)
 		return 1;
 #elif !defined(__APPLE__) && \
@@ -196,25 +200,29 @@ lws_plat_set_socket_options(struct lws_vhost *vhost, int fd, int unix_skt)
 	return lws_plat_set_nonblocking(fd);
 }
 
+#if !defined(__NuttX__)
 static const int ip_opt_lws_flags[] = {
-	LCCSCF_IP_LOW_LATENCY, LCCSCF_IP_HIGH_THROUGHPUT,
-	LCCSCF_IP_HIGH_RELIABILITY
-#if !defined(__OpenBSD__)
+	LCCSCF_IP_LOW_LATENCY, LCCSCF_IP_HIGH_THROUGHPUT
+#if !defined(__OpenBSD__) && !defined(__sun) && !defined(__QNX__)
+	, LCCSCF_IP_HIGH_RELIABILITY
 	, LCCSCF_IP_LOW_COST
 #endif
 }, ip_opt_val[] = {
-	IPTOS_LOWDELAY, IPTOS_THROUGHPUT, IPTOS_RELIABILITY
+	IPTOS_LOWDELAY, IPTOS_THROUGHPUT
 #if !defined(__OpenBSD__) && !defined(__sun) && !defined(__QNX__)
+	, IPTOS_RELIABILITY
 	, IPTOS_MINCOST
 #endif
 };
 #if !defined(LWS_WITH_NO_LOGS)
 static const char *ip_opt_names[] = {
-	"LOWDELAY", "THROUGHPUT", "RELIABILITY"
-#if !defined(__OpenBSD__) && !defined(__sun)
+	"LOWDELAY", "THROUGHPUT"
+#if !defined(__OpenBSD__) && !defined(__sun) && !defined(__QNX__)
+	, "RELIABILITY"
 	, "MINCOST"
 #endif
 };
+#endif
 #endif
 
 int
@@ -243,7 +251,8 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
       !defined(__sun) && \
       !defined(__HAIKU__) && \
       !defined(__CYGWIN__) && \
-      !defined(__QNX__)
+      !defined(__QNX__) && \
+      !defined(__NuttX__)
 
 	/* the BSDs don't have SO_PRIORITY */
 
@@ -261,7 +270,44 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
 	}
 #endif
 
-	for (n = 0; n < 4; n++) {
+	if (lws_flags & LCCSCF_ALLOW_REUSE_ADDR) {
+		optval = 1;
+		if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
+					(const void *)&optval, optlen) < 0) { 
+#if (_LWS_ENABLED_LOGS & LLL_WARN)
+			en = errno;
+			lwsl_warn("%s: unable to reuse local addresses: errno %d\n",
+				__func__, en);
+#endif
+			ret = 1;
+		} else
+			lwsl_notice("%s: set reuse addresses\n", __func__);
+	}
+
+
+	if (lws_flags & LCCSCF_IPV6_PREFER_PUBLIC_ADDR) {
+#if defined(LWS_WITH_IPV6) && defined(IPV6_PREFER_SRC_PUBLIC)
+		optval = IPV6_PREFER_SRC_PUBLIC;
+
+		if (setsockopt(fd, IPPROTO_IPV6, IPV6_ADDR_PREFERENCES,
+						(const void *)&optval, optlen) < 0) {
+				#if (_LWS_ENABLED_LOGS & LLL_WARN)
+					en = errno;
+					lwsl_warn("%s: unable to set IPV6_PREFER_SRC_PUBLIC: errno %d\n",
+						__func__, en);
+				#endif
+				ret = 1;
+		} else
+			lwsl_notice("%s: set IPV6_PREFER_SRC_PUBLIC\n", __func__);
+#else
+		lwsl_err("%s: IPV6_PREFER_SRC_PUBLIC UNIMPLEMENTED on this platform\n", __func__);
+#endif
+	}
+
+
+#if !defined(__NuttX__)
+	/* array size differs by platform */
+	for (n = 0; n < (int)LWS_ARRAY_SIZE(ip_opt_lws_flags); n++) {
 		if (!(lws_flags & ip_opt_lws_flags[n]))
 			continue;
 
@@ -278,6 +324,7 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
 			lwsl_notice("%s: set ip flag %s\n", __func__,
 				    ip_opt_names[n]);
 	}
+#endif
 
 	return ret;
 }
@@ -441,7 +488,7 @@ lws_plat_rawudp_broadcast(uint8_t *p, const uint8_t *canned, size_t canned_len,
 	p[3] = (uint8_t)(n);
 
 	while (p16 < (uint16_t *)(p + 20))
-		ucs += ntohs(*p16++);
+		ucs = ucs + (uint32_t)(ntohs((uint16_t)(*p16++)));
 
 	ucs += ucs >> 16;
 	ucs ^= 0xffff;
@@ -453,7 +500,7 @@ lws_plat_rawudp_broadcast(uint8_t *p, const uint8_t *canned, size_t canned_len,
 
 	memset(&sll, 0, sizeof(sll));
 	sll.sll_family = AF_PACKET;
-	sll.sll_protocol = htons(0x800);
+	sll.sll_protocol = (uint16_t)(htons((uint16_t)0x800));
 	sll.sll_halen = 6;
 	sll.sll_ifindex = (int)if_nametoindex(iface);
 	memset(sll.sll_addr, 0xff, 6);

@@ -24,6 +24,22 @@ The features are:
  - collates utf-8 text payloads into a 250-byte chunk buffer in the json parser
    context object for ease of access
 
+## LEJP Context initialization
+
+lejp doesn't allocate at all, you define a `struct lejp_ctx` usually on the
+stack somewhere, and call `lejp_construct()` to initialize it.
+
+To minimize surprises as lejp evolves, there is now a `flags` member of the
+ctx, which defaults to zero for compatibility with older versions.  After
+the `lejp_construct()` call, you can set `ctx.flags` to indicate you want
+newer options
+
+|lejp flags|Meaning|
+|---|---|
+|LEJP_FLAG_FEAT_OBJECT_INDEXES|Provide indexes for { x, y, x } lists same as for arrays|
+|LEJP_FLAG_FEAT_LEADING_WC|Allow path matches involving leading wildcards, like `*[]`|
+|LEJP_FLAG_LATEST|Alias indicating you want the "best" current options, even if incompatible with old behaviours|
+
 ## Type handling
 
 LEJP leaves all numbers in text form, they are signalled in different callbacks
@@ -84,8 +100,21 @@ or the match index from your path array starting from 1 for the first entry.
 |JSON Array|`[]`|
 |JSON Map|`.`|
 |JSON Map entry key string|`keystring`|
+|Wildcard|`*[]`, or `abc.*[]` etc (depends on `ctx.flags` with `LEJP_FLAG_FEAT_LEADING_WC`)|
 
+## Details of object and array indexes
 
+LEJP maintains a "stack" of index counters, each element represents one level
+in the current hierarchy that may have a list or array of objects in it.
+The amount of levels currently is held in `ctx->ipos`, and `ctx->i[]` holds
+`uint16_t` index counts for each level.
+
+By querying these, you can understand at which element index in a hierarchy of
+arrays in the JSON you are at, unambiguously.
+
+By default that is done for each `[]` array level, if you set `ctx.flags` with
+`LEJP_FLAG_FEAT_OBJECT_INDEXES` option, it is also done for each `{}` object
+level, which can also take comma-separated lists that need index tracking.
 
 ## Comparison with LECP (CBOR parser)
 

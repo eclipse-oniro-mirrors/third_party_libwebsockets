@@ -79,6 +79,10 @@ typedef void (*lws_log_use_cx_t)(struct lws_log_cx *cx, int _new);
 
 typedef struct lws_log_cx {
 	union {
+/* Apparently Qt likes to leave 'emit' defined at the preprocessor */
+#if defined(emit)
+#undef emit
+#endif
 		lws_log_emit_t		emit; /* legacy emit function */
 		lws_log_emit_cx_t	emit_cx; /* LLLF_LOG_CONTEXT_AWARE */
 	} u;
@@ -141,12 +145,15 @@ LWS_VISIBLE LWS_EXTERN struct lws_log_cx *
 lwsl_wsi_get_cx(struct lws *wsi);
 #if defined(LWS_WITH_SECURE_STREAMS)
 struct lws_ss_handle;
-struct lws_sspc_handle;
 LWS_VISIBLE LWS_EXTERN struct lws_log_cx *
 lwsl_ss_get_cx(struct lws_ss_handle *ss);
+#endif
+#if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
+struct lws_sspc_handle;
 LWS_VISIBLE LWS_EXTERN struct lws_log_cx *
 lwsl_sspc_get_cx(struct lws_sspc_handle *ss);
 #endif
+
 
 LWS_VISIBLE LWS_EXTERN void
 lws_log_emit_cx_file(struct lws_log_cx *cx, int level, const char *line,
@@ -164,6 +171,8 @@ lws_log_prepend_wsi(struct lws_log_cx *cx, void *obj, char **p, char *e);
 #if defined(LWS_WITH_SECURE_STREAMS)
 LWS_VISIBLE LWS_EXTERN void
 lws_log_prepend_ss(struct lws_log_cx *cx, void *obj, char **p, char *e);
+#endif
+#if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
 LWS_VISIBLE LWS_EXTERN void
 lws_log_prepend_sspc(struct lws_log_cx *cx, void *obj, char **p, char *e);
 #endif
@@ -330,11 +339,12 @@ _lws_log_cx(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 #define lwsl_user(...) do {} while(0)
 #endif
 
-#define lwsl_hexdump_err(...) lwsl_hexdump_level(LLL_ERR, __VA_ARGS__)
-#define lwsl_hexdump_warn(...) lwsl_hexdump_level(LLL_WARN, __VA_ARGS__)
-#define lwsl_hexdump_notice(...) lwsl_hexdump_level(LLL_NOTICE, __VA_ARGS__)
-#define lwsl_hexdump_info(...) lwsl_hexdump_level(LLL_INFO, __VA_ARGS__)
-#define lwsl_hexdump_debug(...) lwsl_hexdump_level(LLL_DEBUG, __VA_ARGS__)
+#define lwsl_hexdump_user(...)		lwsl_hexdump_level(LLL_USER,   __VA_ARGS__)
+#define lwsl_hexdump_err(...)		lwsl_hexdump_level(LLL_ERR,    __VA_ARGS__)
+#define lwsl_hexdump_warn(...)		lwsl_hexdump_level(LLL_WARN,   __VA_ARGS__)
+#define lwsl_hexdump_notice(...)	lwsl_hexdump_level(LLL_NOTICE, __VA_ARGS__)
+#define lwsl_hexdump_info(...)		lwsl_hexdump_level(LLL_INFO,   __VA_ARGS__)
+#define lwsl_hexdump_debug(...)		lwsl_hexdump_level(LLL_DEBUG,  __VA_ARGS__)
 
 /*
  * lws_context scope logs
@@ -582,6 +592,8 @@ _lws_log_cx(lws_log_cx_t *cx, lws_log_prepend_cx_t prep, void *obj,
 #define lwsl_hexdump_wsi_notice(_v, ...) lwsl_hexdump_wsi(_v, LLL_NOTICE, __VA_ARGS__)
 #define lwsl_hexdump_wsi_info(_v, ...)   lwsl_hexdump_wsi(_v, LLL_INFO, __VA_ARGS__)
 #define lwsl_hexdump_wsi_debug(_v, ...)  lwsl_hexdump_wsi(_v, LLL_DEBUG, __VA_ARGS__)
+#define lwsl_hexdump_wsi_user(_v, ...)   lwsl_hexdump_wsi(_v, LLL_USER, __VA_ARGS__)
+
 
 
 /*

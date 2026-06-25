@@ -105,6 +105,7 @@ static const char * const lejp_tokens_policy[] = {
 	"s[].*.ws_subprotocol",
 	"s[].*.ws_binary",
 	"s[].*.local_sink",
+	"s[].*.options[].*",
 	"s[].*.server",
 	"s[].*.server_cert",
 	"s[].*.server_key",
@@ -213,6 +214,7 @@ typedef enum {
 	LSSPPT_WS_SUBPROTOCOL,
 	LSSPPT_WS_BINARY,
 	LSSPPT_LOCAL_SINK,
+	LSSPPT_OPTIONS,
 	LSSPPT_SERVER,
 	LSSPPT_SERVER_CERT,
 	LSSPPT_SERVER_KEY,
@@ -307,13 +309,14 @@ static signed char
 lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 {
 	struct policy_cb_args *a = (struct policy_cb_args *)ctx->user;
-#if defined(LWS_WITH_SSPLUGINS)
-	const lws_ss_plugin_t **pin;
-#endif
 	char **pp, dotstar[32], *q;
 	lws_ss_trust_store_t *ts;
 	lws_ss_metadata_t *pmd;
 	lws_ss_x509_t *x, **py;
+#if defined(LWS_WITH_SERVER)
+	struct lws_protocol_vhost_options *pvo;
+	const char *pvo_name;
+#endif
 	lws_ss_policy_t *p2;
 	lws_retry_bo_t *b;
 	size_t inl, outl;
@@ -321,8 +324,8 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 	backoff_t *bot;
 	int n = -1;
 
-//	lwsl_debug("%s: %d %d %s\n", __func__, reason, ctx->path_match - 1,
-//		   ctx->path);
+	// lwsl_notice("%s: %d %d %s %s\n", __func__, reason, ctx->path_match - 1,
+	//	   ctx->path, ctx->buf);
 
 	switch (ctx->path_match - 1) {
 	case LSSPPT_RETRY:
@@ -388,6 +391,11 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 		return 0;
 	}
 
+	if (reason == LEJPCB_ARRAY_END &&
+	    ctx->path_match - 1 == LSSPPT_OPTIONS &&
+	    a->pvosp)
+		a->pvosp--;
+
 	if (reason == LEJPCB_OBJECT_END && a->p) {
 		/*
 		 * Allocate a just-the-right-size buf for the cert DER now
@@ -397,6 +405,7 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 		 * The struct *x is in the lwsac... the ca_der it points to
 		 * is individually allocated from the heap
 		 */
+
 		a->curr[LTY_X509].x->ca_der = lws_malloc((unsigned int)a->count, "ssx509");
 		if (!a->curr[LTY_X509].x->ca_der)
 			goto oom;
@@ -598,6 +607,36 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 		goto string2;
 #endif
 
+	case LSSPPT_OPTIONS:
+#if defined(LWS_WITH_SERVER)
+		pvo_name = ctx->path + ctx->st[ctx->sp - 2].p + 1;
+		pvo = lwsac_use(&a->ac, sizeof(*pvo) + strlen(pvo_name) + 1 +
+				 ctx->npos + 1, POL_AC_GRAIN);
+		if (!pvo)
+			goto oom;
+
+		pvo->name = (const char *)&pvo[1];
+		pvo->value = pvo->name + strlen(pvo_name) + 1;
+		memcpy((char *)pvo->name, pvo_name, strlen(pvo_name) + 1);
+		memcpy((char *)pvo->value, ctx->buf, ctx->npos);
+		*((char *)&pvo->value[ctx->npos]) = '\0';
+		pvo->next = NULL;
+		pvo->options = NULL;
+
+		if (!a->curr[LTY_POLICY].p->pvo)
+			a->curr[LTY_POLICY].p->pvo = pvo;
+
+		/* for now we just support one level of options */
+
+		// lwsl_notice("%s: lv %d, %s=%s\n", __func__, a->pvosp,
+		//		pvo->name, pvo->value);
+
+		if (a->pvostack[a->pvosp])
+			a->pvostack[a->pvosp]->next = pvo;
+		a->pvostack[a->pvosp] = pvo;
+#endif
+		break;
+
 	case LSSPPT_SERVER_CERT:
 	case LSSPPT_SERVER_KEY:
 
@@ -702,29 +741,8 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 		pp = (char **)&a->curr[LTY_POLICY].p->payload_fmt;
 		goto string2;
 
-	case LSSPPT_PLUGINS:
-#if defined(LWS_WITH_SSPLUGINS)
-		pin = a->context->pss_plugins;
-		if (a->count ==
-			  (int)LWS_ARRAY_SIZE(a->curr[LTY_POLICY].p->plugins)) {
-			lwsl_err("%s: too many plugins\n", __func__);
-
-			goto oom;
-		}
-		if (!pin)
-			break;
-		while (*pin) {
-			if (!strncmp((*pin)->name, ctx->buf, ctx->npos)) {
-				a->curr[LTY_POLICY].p->plugins[a->count++] = *pin;
-				return 0;
-			}
-			pin++;
-		}
-		lwsl_err("%s: unknown plugin\n", __func__);
-		goto oom;
-#else
+	case LSSPPT_PLUGINS: /* deprecated */
 		break;
-#endif
 
 	case LSSPPT_TLS:
 		if (reason == LEJPCB_VAL_TRUE)
@@ -878,6 +896,8 @@ lws_ss_policy_parser_cb(struct lejp_ctx *ctx, char reason)
 			sizeof(lws_ss_metadata_t) + ctx->npos +
 			(unsigned int)(ctx->path_match_len - ctx->st[ctx->sp - 2].p + 1) + 2,
 			POL_AC_GRAIN);
+		if (!a->curr[LTY_POLICY].p->metadata)
+			return -1;
 		a->curr[LTY_POLICY].p->metadata->next = pmd;
 
 		q = (char *)a->curr[LTY_POLICY].p->metadata +
@@ -1175,7 +1195,7 @@ lws_ss_policy_parse_abandon(struct lws_context *context)
 {
 	struct policy_cb_args *args = (struct policy_cb_args *)context->pol_args;
 	lws_ss_x509_t *x;
-
+lwsl_notice("%s\n", __func__);
 	x = args->heads[LTY_X509].x;
 	while (x) {
 		/*
@@ -1213,8 +1233,10 @@ lws_ss_policy_parse_file(struct lws_context *cx, const char *filepath)
 	uint8_t buf[512];
 	int n, m, fd = lws_open(filepath, LWS_O_RDONLY);
 
-	if (fd < 0)
+	if (fd < 0) {
+		lwsl_cx_err(cx, "Unable to open policy '%s'", filepath);
 		return LEJP_REJECT_UNKNOWN;
+	}
 
 	do {
 		n = (int)read(fd, buf, sizeof(buf));

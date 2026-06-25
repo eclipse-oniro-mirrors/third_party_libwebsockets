@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -161,7 +161,7 @@ lws_urldecode_s_process(struct lws_urldecode_stateful *s, const char *in,
 	char c;
 
 	while (len--) {
-		if (s->pos >= s->out_len - s->mp - 1) {
+		if (s->pos == s->out_len - s->mp - 1) {
 			if (s->output(s->data, s->name, &s->out, s->pos,
 				      LWS_UFS_CONTENT))
 				return -1;
@@ -274,34 +274,10 @@ retry_as_first:
 				if (!s->boundary_real_crlf)
 					n = 2;
 				if (s->mp >= n) {
-					int extra = s->mp - n;
-					int ext_pos = 0;
-
-					while (extra) {
-						int chunk;
-
-						if (s->pos >= s->out_len - 1) {
-							if (s->output(s->data, s->name,
-								      &s->out, s->pos,
-								      LWS_UFS_CONTENT))
-								return -1;
-							s->pos = 0;
-							if (s->out_len <= 1)
-								return -1;
-						}
-
-						chunk = extra;
-						if (chunk > s->out_len - s->pos - 1)
-							chunk = s->out_len - s->pos - 1;
-
-						memcpy(s->out + s->pos,
-						       s->mime_boundary + n + ext_pos,
-						       (unsigned int)chunk);
-
-						s->pos += chunk;
-						ext_pos += chunk;
-						extra -= chunk;
-					}
+					memcpy(s->out + s->pos,
+					       s->mime_boundary + n,
+					       (unsigned int)(s->mp - n));
+					s->pos += s->mp;
 					s->mp = 0;
 					goto retry_as_first;
 				}
@@ -506,7 +482,23 @@ lws_urldecode_spa_lookup(struct lws_spa *spa, const char *name)
 	int n;
 
 	for (n = 0; n < spa->i.count_params; n++) {
-		if (!strcmp(*pp, name))
+		if (!*pp && !spa->i.param_names_stride && spa->i.ac) {
+			unsigned int len = (unsigned int)strlen(name);
+			char **ptr = (char**)spa->i.param_names;
+
+			/* Use NULLs at end of list to dynamically create
+			 * unknown entries */
+
+			ptr[n] = lwsac_use(spa->i.ac, len + 1, spa->i.ac_chunk_size);
+			if (!ptr[n])
+				return -1;
+
+			memcpy(ptr[n], name, len);
+			ptr[n][len] = '\0';
+
+			return n;
+		}
+		if (*pp && !strcmp(*pp, name))
 			return n;
 
 		if (spa->i.param_names_stride)
@@ -594,7 +586,7 @@ lws_spa_create_via_info(struct lws *wsi, const lws_spa_create_info_t *i)
 	if (!spa->storage)
 		goto bail2;
 
-	spa->end = spa->storage + i->max_storage - 1;
+	spa->end = spa->storage + spa->i.max_storage - 1;
 
 	if (i->count_params) {
 		if (i->ac)
@@ -607,7 +599,7 @@ lws_spa_create_via_info(struct lws *wsi, const lws_spa_create_info_t *i)
 			goto bail3;
 	}
 
-	spa->s = lws_urldecode_s_create(spa, wsi, spa->storage, i->max_storage,
+	spa->s = lws_urldecode_s_create(spa, wsi, spa->storage, spa->i.max_storage,
 					lws_urldecode_spa_cb);
 	if (!spa->s)
 		goto bail4;

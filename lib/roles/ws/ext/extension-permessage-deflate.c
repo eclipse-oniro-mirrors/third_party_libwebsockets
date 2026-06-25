@@ -309,6 +309,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 		 */
 
 		/* COV says we can overflow if "eb_in.len == 0 and rx->avail_in == 4" */
+
 		if ((unsigned int)priv->rx.avail_in > (unsigned int)pmdrx->eb_in.len) {
 			lwsl_wsi_err(wsi, "rx buffer underflow");
 			return PMDR_FAILED;

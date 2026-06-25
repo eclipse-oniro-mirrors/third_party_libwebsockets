@@ -124,7 +124,7 @@ __lws_lc_tag(struct lws_context *context, lws_lifecycle_group_t *grp,
 	lwsl_refcount_cx(lc->log_cx, 1);
 
 #if defined(LWS_LOG_TAG_LIFECYCLE)
-	lwsl_cx_notice(context, " ++ %s (%d)", lc->gutag, (int)grp->owner.count);
+	lwsl_cx_info(context, " ++ %s (%d)", lc->gutag, (int)grp->owner.count);
 #endif
 }
 
@@ -146,6 +146,11 @@ __lws_lc_tag_append(lws_lifecycle_t *lc, const char *app)
 	if (n && lc->gutag[n - 1] == ']')
 		n--;
 
+	if (!lc->recycle_len)
+		lc->recycle_len = (uint8_t)n;
+	else
+		n = lc->recycle_len;
+
 	n += lws_snprintf(&lc->gutag[n], sizeof(lc->gutag) - 2u -
 					 (unsigned int)n, "|%s]", app);
 
@@ -163,7 +168,9 @@ void
 __lws_lc_untag(struct lws_context *context, lws_lifecycle_t *lc)
 {
 	//lws_lifecycle_group_t *grp;
+#if defined(LWS_LOG_TAG_LIFECYCLE)
 	char buf[24];
+#endif
 
 	if (!lc->gutag[0]) { /* we never tagged this object... */
 		lwsl_cx_err(context, "%s never tagged", lc->gutag);
@@ -179,12 +186,12 @@ __lws_lc_untag(struct lws_context *context, lws_lifecycle_t *lc)
 
 	//grp = lws_container_of(lc->list.owner, lws_lifecycle_group_t, owner);
 
-	lws_humanize(buf, sizeof(buf),
-		     (uint64_t)lws_now_usecs() - lc->us_creation,
-		     humanize_schema_us);
-
 #if defined(LWS_LOG_TAG_LIFECYCLE)
-	lwsl_cx_notice(context, " -- %s (%d) %s", lc->gutag,
+	if (lws_humanize(buf, sizeof(buf),
+		     (uint64_t)lws_now_usecs() - lc->us_creation,
+		     humanize_schema_us) > 0)
+
+	lwsl_cx_info(context, " -- %s (%d) %s", lc->gutag,
 		    (int)lc->list.owner->count - 1, buf);
 #endif
 
@@ -312,7 +319,7 @@ lwsl_emit_stderr_notimestamp(int level, const char *line)
 	_lwsl_emit_stderr(level, line);
 }
 
-#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE)
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(LWS_PLAT_BAREMETAL)
 
 /*
  * Helper to emit to a file

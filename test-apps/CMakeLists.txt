@@ -93,11 +93,6 @@ if ((LWS_ROLE_H1 OR LWS_ROLE_H2))
 			endif()
 		endif()
 		
-		if (LWS_LIB_INCLUDES)
-			target_include_directories(${TEST_NAME} PRIVATE "${LWS_LIB_INCLUDES}" ${LWS_LIB_BUILD_INC_PATHS})
-		else()
-			target_include_directories(${TEST_NAME} PRIVATE ${LWS_LIB_BUILD_INC_PATHS})
-		endif()
 		target_compile_options(${TEST_NAME} PRIVATE ${LWS_PTHR_FLAGS})
 
 		if (LWS_WITH_HTTP_STREAM_COMPRESSION)
@@ -121,7 +116,7 @@ if ((LWS_ROLE_H1 OR LWS_ROLE_H2))
 		list(APPEND TEST_APP_LIST ${TEST_NAME})
 	endmacro()
 
-	if (NOT LWS_WITHOUT_SERVER)
+	if (NOT LWS_WITHOUT_SERVER AND LWS_WITH_FILE_OPS)
 		#
 		# test-server
 		#
@@ -163,7 +158,6 @@ if ((LWS_ROLE_H1 OR LWS_ROLE_H2))
 			set_property(
 				TARGET test-server-extpoll
 				PROPERTY COMPILE_DEFINITIONS 
-					LWS_WITH_EXTERNAL_POLL
 					INSTALL_DATADIR="${CMAKE_INSTALL_PREFIX}/share"
 				)
 
@@ -225,7 +219,7 @@ if ((LWS_ROLE_H1 OR LWS_ROLE_H2))
 							COMMAND "${CMAKE_COMMAND}" -E copy "${TEST_FILE}" "$<TARGET_FILE_DIR:test-server>/../share/libwebsockets-test-server" VERBATIM)
 			endif()
 		endforeach()
-	endif(NOT LWS_WITHOUT_SERVER)
+	endif(NOT LWS_WITHOUT_SERVER AND LWS_WITH_FILE_OPS)
 
 	if (NOT LWS_WITHOUT_CLIENT)
 		#

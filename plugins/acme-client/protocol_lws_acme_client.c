@@ -1125,8 +1125,10 @@ pkt_add_hdrs:
 			goto pkt_add_hdrs;
 
 		case ACME_STATE_POLLING_CSR:
-			if (ac->goes_around)
-				break;
+			if (ac->goes_around) {
+				strcpy(ac->active_url, ac->order_url);
+				goto pkt_add_hdrs;
+			}
 			lwsl_vhost_notice(vhd->vhost, "Generating ACME CSR... may take a little while");
 			p += lws_snprintf(p, lws_ptr_diff_size_t(end, p), "{\"csr\":\"");
 			n = lws_tls_acme_sni_csr_create(vhd->context,
@@ -1396,7 +1398,7 @@ poll_again:
 			lws_acme_report_status(vhd->vhost, LWS_CUS_CHALLENGE,
 					       NULL);
 
-			if (ac->goes_around++ == 20) {
+			if (ac->goes_around++ == 200) {
 				lwsl_notice("%s: too many chall retries\n",
 						__func__);
 
@@ -1470,13 +1472,13 @@ poll_again:
 				goto failed;
 			}
 
-			if (ac->resp != 200) {
-				if (ac->goes_around++ == 30) {
+			if (ac->resp != 200 || ac->cert_url[0] == '\0') {
+				if (ac->goes_around++ == 200) {
 					lwsl_vhost_warn(vhd->vhost, "Too many retries");
 
 					goto failed;
 				}
-				strcpy(buf, ac->finalize_url);
+				strcpy(buf, ac->order_url);
 				cwsi = lws_acme_client_connect(vhd->context,
 						vhd->vhost,
 						&ac->cwsi, &ac->i, buf,
@@ -1618,7 +1620,7 @@ LWS_VISIBLE const struct lws_protocols lws_acme_client_protocols[] = {
 	LWS_PLUGIN_PROTOCOL_LWS_ACME_CLIENT
 };
 
-LWS_VISIBLE const lws_plugin_protocol_t protocol_lws_acme_client = {
+LWS_VISIBLE const lws_plugin_protocol_t lws_acme_client = {
 	.hdr = {
 		"acme client",
 		"lws_protocol_plugin",

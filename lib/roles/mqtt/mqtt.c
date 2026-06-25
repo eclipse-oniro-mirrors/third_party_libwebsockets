@@ -1029,17 +1029,27 @@ _lws_mqtt_rx_parser(struct lws *wsi, lws_mqtt_parser_t *par,
 			switch (par->conn_rc) {
 			case 0:
 				goto cmd_completion;
+			/* 3.1.1 errors [MQTT-3.2.3] */
 			case 1:
-			case 2:
-			case 3:
-			case 4:
-			case 5:
-				par->reason = LMQCP_REASON_UNSUPPORTED_PROTOCOL +
-						par->conn_rc - 1;
+				par->reason = LMQCP_REASON_UNSUPPORTED_PROTOCOL;
 				goto send_reason_and_close;
+			case 2:
+				par->reason = LMQCP_REASON_CLIENT_ID_INVALID;
+				goto send_reason_and_close;
+			case 3:
+				par->reason = LMQCP_REASON_SERVER_UNAVAILABLE;
+				goto send_reason_and_close;
+			case 4:
+				par->reason = LMQCP_REASON_BAD_CREDENTIALS;
+				goto send_reason_and_close;
+			case 5:
+				par->reason = LMQCP_REASON_NOT_AUTHORIZED;
+				goto send_reason_and_close;
+			/* 5.0 and all other errors [MQTT-3.2.2.2] */
 			default:
+				par->reason = (lws_mqtt_reason_t)par->conn_rc;
 				lwsl_notice("%s: bad connack retcode\n", __func__);
-				goto send_protocol_error_and_close;
+				goto send_reason_and_close;
 			}
 			break;
 
@@ -1284,7 +1294,9 @@ cmd_completion:
 				lws_set_timeout(wsi, 0, 0);
 
 				w = lws_create_new_server_wsi(wsi->a.vhost,
-							      wsi->tsi, "mqtt_sid1");
+							      wsi->tsi,
+							      LWSLCG_WSI_MUX,
+							      "mqtt_sid1");
 				if (!w) {
 					lwsl_notice("%s: sid 1 migrate failed\n",
 							__func__);
@@ -2325,7 +2337,7 @@ lws_mqtt_client_send_unsubcribe(struct lws *wsi,
 		for (n = 0; n < unsub->num_topics; n++) {
 			mysub = lws_mqtt_find_sub(nwsi->mqtt,
 						  unsub->topic[n].name);
-			assert(mysub);
+			//assert(mysub);
 
 			if (mysub && --mysub->ref_count == 0) {
 				lwsl_notice("%s: Need to send UNSUB\n", __func__);

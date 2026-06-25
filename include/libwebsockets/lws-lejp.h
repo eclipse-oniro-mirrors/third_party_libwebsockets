@@ -30,6 +30,7 @@
  */
 //@{
 struct lejp_ctx;
+struct lwsac;
 
 #if !defined(LWS_ARRAY_SIZE)
 #define LWS_ARRAY_SIZE(_x) (sizeof(_x) / sizeof(_x[0]))
@@ -108,6 +109,8 @@ enum lejp_callbacks {
 
 	LEJPCB_OBJECT_START	= 16,
 	LEJPCB_OBJECT_END	= 17,
+
+	LEJPCB_USER_START	= 32,
 };
 
 /**
@@ -176,16 +179,16 @@ LWS_EXTERN signed char _lejp_callback(struct lejp_ctx *ctx, char reason);
 typedef signed char (*lejp_callback)(struct lejp_ctx *ctx, char reason);
 
 #ifndef LEJP_MAX_PARSING_STACK_DEPTH
-#define LEJP_MAX_PARSING_STACK_DEPTH 5
+#define LEJP_MAX_PARSING_STACK_DEPTH 10
 #endif
 #ifndef LEJP_MAX_DEPTH
-#define LEJP_MAX_DEPTH 12
+#define LEJP_MAX_DEPTH 16
 #endif
 #ifndef LEJP_MAX_INDEX_DEPTH
-#define LEJP_MAX_INDEX_DEPTH 8
+#define LEJP_MAX_INDEX_DEPTH 12
 #endif
 #ifndef LEJP_MAX_PATH
-#define LEJP_MAX_PATH 128
+#define LEJP_MAX_PATH 192
 #endif
 #ifndef LEJP_STRING_CHUNK
 /* must be >= 30 to assemble floats */
@@ -215,6 +218,20 @@ struct _lejp_parsing_stack {
 	uint8_t			path_match;
 };
 
+typedef struct lejp_string_piece {
+	struct lejp_string_piece	*next;
+	const char			*piece;
+	size_t				len;
+} lejp_string_piece_t;
+
+typedef struct {
+	lejp_string_piece_t	*sph;
+	lejp_string_piece_t	**sp_next;
+	int			pieces;
+	size_t			asl;
+	char			*fp;
+} lejp_string_unifier_t;
+
 struct lejp_ctx {
 
 	/* sorted by type for most compact alignment
@@ -232,6 +249,8 @@ struct lejp_ctx {
 	char path[LEJP_MAX_PATH];
 	char buf[LEJP_STRING_CHUNK + 1];
 
+	lejp_string_unifier_t	su;
+
 	/* size_t */
 
 	size_t path_stride; /* 0 means default ptr size, else stride */
@@ -243,6 +262,12 @@ struct lejp_ctx {
 	/* short */
 
 	uint16_t uni;
+#define LEJP_FLAG_FEAT_OBJECT_INDEXES				(1 << 0)
+#define LEJP_FLAG_FEAT_LEADING_WC				(1 << 1)
+#define LEJP_FLAG_LATEST \
+					(LEJP_FLAG_FEAT_OBJECT_INDEXES | \
+					 LEJP_FLAG_FEAT_LEADING_WC)
+	uint16_t flags;
 
 	/* char */
 
@@ -298,4 +323,10 @@ lejp_get_wildcard(struct lejp_ctx *ctx, int wildcard, char *dest, int len);
 
 LWS_VISIBLE LWS_EXTERN const char *
 lejp_error_to_string(int e);
+
+LWS_VISIBLE LWS_EXTERN int
+lejp_string_unify(struct lejp_ctx *ctx, struct lwsac **ac);
+
+LWS_VISIBLE LWS_EXTERN int
+lejp_string_unify_part(struct lejp_ctx *ctx, struct lwsac **ac, char reason);
 //@}

@@ -350,6 +350,7 @@ enum lws_token_indexes {
 	_WSI_TOKEN_CLIENT_ORIGIN,
 	_WSI_TOKEN_CLIENT_METHOD,
 	_WSI_TOKEN_CLIENT_IFACE,
+	_WSI_TOKEN_CLIENT_LOCALPORT,
 	_WSI_TOKEN_CLIENT_ALPN,
 
 	/* always last real token index*/
@@ -435,7 +436,7 @@ lws_hdr_copy(struct lws *wsi, char *dest, int len, enum lws_token_indexes h);
 /**
  * lws_hdr_copy_fragment() - copy a single fragment of the given header to a buffer
  *		The buffer length len must include space for an additional
- *		terminating '\0', or it will fail returning -1.
+ *		terminating '\0', or it will fail returning -2.
  *		If the requested fragment index is not present, it fails
  *		returning -1.
  *

@@ -22,8 +22,16 @@
  * IN THE SOFTWARE.
  */
 
+#if !defined(__LWS_PRIVATE_SS_H__)
+#define __LWS_PRIVATE_SS_H__
+
 /* current SS Serialization protocol version */
 #define LWS_SSS_CLIENT_PROTOCOL_VERSION 1
+
+#if defined(STANDALONE)
+#define lws_context lws_context_standalone
+struct lws_context_standalone;
+#endif
 
 /*
  * Secure Stream state
@@ -39,7 +47,7 @@ typedef enum {
 	SSSEQ_CONNECTED,
 } lws_ss_seq_state_t;
 
-struct conn;
+struct lws_sss_proxy_conn;
 
 /**
  * lws_ss_handle_t: publicly-opaque secure stream object implementation
@@ -63,20 +71,14 @@ typedef struct lws_ss_handle {
 	lws_fi_ctx_t		fic;	/**< Fault Injection context */
 #endif
 
-	struct lws_dll2_owner	src_list; /**< sink's list of bound sources */
+	struct lws_dll2_owner   src_list; /**< server's list of bound sources */
 
 	struct lws_context      *context; /**< lws context we are created on */
 	const lws_ss_policy_t	*policy;  /**< system policy for stream */
 
-	struct lws_sequencer	*seq;	  /**< owning sequencer if any */
 	struct lws		*wsi;	  /**< the stream wsi if any */
 
-	struct conn		*conn_if_sspc_onw;
-
-#if defined(LWS_WITH_SSPLUGINS)
-	void			*nauthi;  /**< the nauth plugin instance data */
-	void			*sauthi;  /**< the sauth plugin instance data */
-#endif
+	struct lws_sss_proxy_conn *conn_if_sspc_onw;
 
 	lws_ss_metadata_t	*metadata;
 #if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
@@ -89,12 +91,18 @@ typedef struct lws_ss_handle {
 #if defined(LWS_WITH_CONMON)
 	char			*conmon_json;
 #endif
-
-	//struct lws_ss_handle	*h_sink;  /**< sink we are bound to, or NULL */
-	//void 			*sink_obj;/**< sink's private object representing us */
+#if defined(LWS_WITH_SERVER)
+	lws_dll2_t		sink_bind; /* if bound to / owned by a sink */
+	lws_sorted_usec_list_t	sul_txreq; /* pending tx req to peer */
+	struct lws_ss_handle	*sink_local_bind; /* nonproxy sink peer */
+#endif
 
 	lws_sorted_usec_list_t	sul_timeout;
 	lws_sorted_usec_list_t	sul;
+#if defined(LWS_WITH_FILE_OPS)
+	lws_sorted_usec_list_t	fops_sul;
+	lws_fop_fd_t		fop_fd;
+#endif
 	lws_ss_tx_ordinal_t	txord;
 
 	/* protocol-specific connection helpers */
@@ -124,17 +132,17 @@ typedef struct lws_ss_handle {
 
 			union {
 				struct { /* LWSSSP_H1 */
-#if defined(WIN32)
+#if defined(WIN32) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 					uint8_t dummy;
 #endif
 				} h1;
 				struct { /* LWSSSP_H2 */
-#if defined(WIN32)
+#if defined(WIN32) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 					uint8_t dummy;
 #endif
 				} h2;
 				struct { /* LWSSSP_WS */
-#if defined(WIN32)
+#if defined(WIN32) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 					uint8_t dummy;
 #endif
 				} ws;
@@ -190,6 +198,7 @@ typedef struct lws_ss_handle {
 
 	uint8_t			txn_resp_set:1; /**< user code set one */
 	uint8_t			txn_resp_pending:1; /**< we have yet to send */
+	uint8_t			txn_n_acked:1; /** < set if we did NACK or ACK */
 	uint8_t			hanging_som:1;
 	uint8_t			inside_msg:1;
 	uint8_t			being_serialized:1; /* we are not the consumer */
@@ -207,7 +216,7 @@ union lws_ss_contemp {
 #if defined(LWS_ROLE_MQTT)
 	lws_mqtt_client_connect_param_t ccp;
 #else
-#if defined(WIN32)
+#if defined(WIN32) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 	uint8_t	dummy;
 #endif
 #endif
@@ -237,6 +246,66 @@ enum {
 	KIND_SS_TO_P,
 };
 
+typedef enum {
+	RPAR_TYPE,
+	RPAR_LEN_MSB,
+	RPAR_LEN_LSB,
+
+	RPAR_FLAG_B3,
+	RPAR_FLAG_B2,
+	RPAR_FLAG_B1,
+	RPAR_FLAG_B0,
+
+	RPAR_LATA3,
+	RPAR_LATA2,
+	RPAR_LATA1,
+	RPAR_LATA0,
+
+	RPAR_LATB7,
+	RPAR_LATB6,
+	RPAR_LATB5,
+	RPAR_LATB4,
+	RPAR_LATB3,
+	RPAR_LATB2,
+	RPAR_LATB1,
+	RPAR_LATB0,
+
+	RPAR_RIDESHARE_LEN,
+	RPAR_RIDESHARE,
+
+	RPAR_PERF,
+
+	RPAR_RESULT_CREATION_DSH,
+	RPAR_RESULT_CREATION_RIDESHARE,
+
+	RPAR_METADATA_NAMELEN,
+	RPAR_METADATA_NAME,
+	RPAR_METADATA_VALUE,
+
+	RPAR_PAYLOAD,
+
+	RPAR_RX_TXCR_UPDATE,
+
+	RPAR_STREAMTYPE,
+	RPAR_INIT_PROVERS,
+	RPAR_INIT_PID,
+	RPAR_INITTXC0,
+
+	RPAR_TXCR0,
+
+	RPAR_TIMEOUT0,
+
+	RPAR_PAYLEN0,
+
+	RPAR_RESULT_CREATION,
+
+	RPAR_STATEINDEX,
+	RPAR_ORD3,
+	RPAR_ORD2,
+	RPAR_ORD1,
+	RPAR_ORD0,
+} rx_parser_t;
+
 struct lws_ss_serialization_parser {
 	char			streamtype[32];
 	char			rideshare[32];
@@ -248,7 +317,7 @@ struct lws_ss_serialization_parser {
 	uint8_t			*rxmetaval;
 
 	int			ps;
-	int			ctr;
+	lws_ss_constate_t	ctr;
 
 	uint32_t		usd_phandling;
 	uint32_t		flags;
@@ -299,6 +368,14 @@ enum {
 	LWSSSPC_ONW_CONN,
 };
 
+typedef struct ss_proxy_onward {
+	lws_ss_handle_t 	  *ss;
+	struct lws_sss_proxy_conn *conn;
+} ss_proxy_t;
+
+extern const lws_transport_client_ops_t txp_ops_sspc_wsi;
+extern const lws_transport_proxy_ops_t txp_ops_ssproxy_wsi;
+
 typedef struct lws_sspc_handle {
 	char			rideshare_list[128];
 
@@ -306,6 +383,8 @@ typedef struct lws_sspc_handle {
 
 	lws_ss_info_t		ssi;
 	lws_sorted_usec_list_t	sul_retry;
+
+	lws_txp_path_client_t	txp_path;
 
 	struct lws_ss_serialization_parser parser;
 
@@ -322,8 +401,6 @@ typedef struct lws_sspc_handle {
 #if defined(LWS_WITH_SYS_METRICS)
 	lws_metrics_caliper_compose(cal_txn)
 #endif
-
-	struct lws		*cwsi;
 
 	struct lws_dsh		*dsh;
 	struct lws_context	*context;
@@ -399,12 +476,15 @@ struct policy_cb_args {
 
 	lws_ss_http_respmap_t respmap[16];
 
+	struct lws_protocol_vhost_options *pvostack[4];
+
 	union u heads[_LTY_COUNT];
 	union u curr[_LTY_COUNT];
 
 	uint8_t *p;
 
 	int count;
+	int pvosp;
 	char pending_respmap;
 
 	uint8_t parse_data:1;
@@ -423,21 +503,23 @@ extern const lws_ss_policy_t pol_smd;
  *	LWSSSSRET_DESTROY_ME
  */
 int
-lws_ss_deserialize_parse(struct lws_ss_serialization_parser *par,
-			 struct lws_context *context,
-			 struct lws_dsh *dsh, const uint8_t *cp, size_t len,
-			 lws_ss_conn_states_t *state, void *parconn,
-			 lws_ss_handle_t **pss, lws_ss_info_t *ssi, char client);
+lws_ss_proxy_deserialize_parse(struct lws_ss_serialization_parser *par,
+			       struct lws_context *context,
+			       struct lws_dsh *dsh, const uint8_t *cp,
+			       size_t len, lws_ss_conn_states_t *state,
+			       void *parconn, lws_ss_handle_t **pss,
+			       lws_ss_info_t *ssi);
 int
-lws_ss_serialize_rx_payload(struct lws_dsh *dsh, const uint8_t *buf,
-			    size_t len, int flags, const char *rsp);
+lws_sspc_deserialize_parse(lws_sspc_handle_t *hh, const uint8_t *cp, size_t len,
+			   lws_ss_handle_t **pss);
+
 int
 lws_ss_deserialize_tx_payload(struct lws_dsh *dsh, struct lws *wsi,
 			      lws_ss_tx_ordinal_t ord, uint8_t *buf,
 			      size_t *len, int *flags);
-int
-lws_ss_serialize_state(struct lws *wsi, struct lws_dsh *dsh, lws_ss_constate_t state,
-		       lws_ss_tx_ordinal_t ack);
+
+void
+lws_sspc_sul_retry_cb(lws_sorted_usec_list_t *sul);
 
 const lws_ss_policy_t *
 lws_ss_policy_lookup(const struct lws_context *context, const char *streamtype);
@@ -476,9 +558,6 @@ lws_ss_set_timeout_us(lws_ss_handle_t *h, lws_usec_t us);
 
 void
 ss_proxy_onward_txcr(void *userobj, int bump);
-
-int
-lws_ss_serialize_txcr(struct lws_dsh *dsh, int txcr);
 
 int
 lws_ss_sys_auth_api_amazon_com(struct lws_context *context);
@@ -567,13 +646,17 @@ lws_ss_assert_extant(struct lws_context *cx, int tsi, struct lws_ss_handle *h);
 #define lws_ss_assert_extant(_a, _b, _c)
 #endif
 
+#if defined(LWS_WITH_SECURE_STREAMS)
 typedef int (* const secstream_protocol_connect_munge_t)(lws_ss_handle_t *h,
 		char *buf, size_t len, struct lws_client_connect_info *i,
 		union lws_ss_contemp *ct);
+#endif
 
 typedef int (* const secstream_protocol_add_txcr_t)(lws_ss_handle_t *h, int add);
 
 typedef int (* const secstream_protocol_get_txcr_t)(lws_ss_handle_t *h);
+
+#if defined(LWS_WITH_SECURE_STREAMS)
 
 struct ss_pcols {
 	const char					*name;
@@ -583,6 +666,7 @@ struct ss_pcols {
 	secstream_protocol_add_txcr_t			tx_cr_add;
 	secstream_protocol_get_txcr_t			tx_cr_est;
 };
+#endif
 
 /*
  * Because both sides of the connection share the conn, we allocate it
@@ -600,17 +684,46 @@ lws_conmon_ss_json(lws_ss_handle_t *h);
 void
 ss_proxy_onward_link_req_writeable(lws_ss_handle_t *h_onward);
 
-struct conn {
+#define LWS_PROXY_CONN_MAGIC LWS_FOURCC('C', 'o', 'N', 'N')
+#define assert_is_conn(_conn) lws_assert_fourcc(_conn->magic, LWS_PROXY_CONN_MAGIC)
+
+struct lws_sss_proxy_conn {
+#if defined(_DEBUG)
+	uint32_t		magic;
+#endif
 	struct lws_ss_serialization_parser parser;
 
 	lws_dsh_t		*dsh;	/* unified buffer for both sides */
-	struct lws		*wsi;	/* the proxy's client side */
+	lws_txp_path_proxy_t	txp_path;
 	lws_ss_handle_t		*ss;	/* the onward, ss side */
 
 	lws_ss_conn_states_t	state;
+	struct lws_context	*cx;
 
 	char			onward_in_flow_control;
 };
+
+/*
+ * Handlers for onward SS that divert the events and data into serialized
+ * secure streams proxy.
+ */
+
+lws_ss_state_return_t
+lws_sss_proxy_onward_state(void *userobj, void *sh, lws_ss_constate_t state,
+			   lws_ss_tx_ordinal_t ack);
+
+lws_ss_state_return_t
+lws_sss_proxy_onward_tx(void *userobj, lws_ss_tx_ordinal_t ord, uint8_t *buf,
+			size_t *len, int *flags);
+
+lws_ss_state_return_t
+lws_sss_proxy_onward_rx(void *userobj, const uint8_t *buf, size_t len, int flags);
+
+void
+lws_transport_set_link(lws_transport_mux_t *tm, int link_state);
+
+lws_ss_state_return_t
+lws_ss_proxy_destroy(struct lws_context *cx);
 
 extern const struct ss_pcols ss_pcol_h1;
 extern const struct ss_pcols ss_pcol_h2;
@@ -624,3 +737,7 @@ extern const struct lws_protocols protocol_secstream_ws;
 extern const struct lws_protocols protocol_secstream_mqtt;
 extern const struct lws_protocols protocol_secstream_raw;
 
+#if defined(STANDALONE)
+#undef lws_context
+#endif
+#endif
