@@ -21,6 +21,7 @@ if (target_os == "ios") {
 }
 
 ohos_static_library("websockets") {
+  branch_protector_ret = "pac_ret"
   sources = [
     "//third_party/libwebsockets/lib/core-net/adopt.c",
     "//third_party/libwebsockets/lib/core-net/client/client.c",
@@ -326,6 +327,7 @@ config("websockets_public_config") {
 }
 
 ohos_static_library("websockets_static") {
+  branch_protector_ret = "pac_ret"
   sources = [
     "//third_party/libwebsockets/lib/core-net/adopt.c",
     "//third_party/libwebsockets/lib/core-net/client/client.c",
