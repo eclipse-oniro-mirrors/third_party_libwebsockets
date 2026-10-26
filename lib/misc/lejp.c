@@ -280,13 +280,13 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 					lejp_check_path_match(ctx);
 				if (ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_ARRAY_START))
 					goto reject_callback;
-				ctx->i[ctx->ipos++] = 0;
-				if (ctx->flags & LEJP_FLAG_FEAT_LEADING_WC)
-					lejp_check_path_match(ctx);
-				if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
+				if (ctx->ipos >= (int)LWS_ARRAY_SIZE(ctx->i)) {
 					ret = LEJP_REJECT_MP_DELIM_ISTACK;
 					goto reject;
 				}
+				ctx->i[ctx->ipos++] = 0;
+				if (ctx->flags & LEJP_FLAG_FEAT_LEADING_WC)
+					lejp_check_path_match(ctx);
 				goto add_stack_level;
 			}
 			if (c != '{') {
@@ -298,11 +298,11 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				/* since insides of {} can have ',', we should
 				 * add an index level so we can count them
 				 */
-				ctx->i[ctx->ipos++] = 0;
-				if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
+				if (ctx->ipos >= (int)LWS_ARRAY_SIZE(ctx->i)) {
 					ret = LEJP_REJECT_MP_DELIM_ISTACK;
 					goto reject;
 				}
+				ctx->i[ctx->ipos++] = 0;
 			}
 			if (ctx->pst[ctx->pst_sp].callback(ctx,
 							   LEJPCB_OBJECT_START))
@@ -473,11 +473,11 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 					/* since insides of {} can have ',', we should
 					 * add an index level so we can count them
 					 */
-					ctx->i[ctx->ipos++] = 0;
-					if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
+					if (ctx->ipos >= (int)LWS_ARRAY_SIZE(ctx->i)) {
 						ret = LEJP_REJECT_MP_DELIM_ISTACK;
 						goto reject;
 					}
+					ctx->i[ctx->ipos++] = 0;
 				}
 				if (ctx->pst[ctx->pst_sp].callback(ctx,
 							LEJPCB_OBJECT_START))
@@ -501,11 +501,11 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 					goto reject_callback;
 				if (ctx->flags & LEJP_FLAG_FEAT_LEADING_WC)
 					lejp_check_path_match(ctx);
-				ctx->i[ctx->ipos++] = 0;
-				if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
+				if (ctx->ipos >= (int)LWS_ARRAY_SIZE(ctx->i)) {
 					ret = LEJP_REJECT_MP_DELIM_ISTACK;
 					goto reject;
 				}
+				ctx->i[ctx->ipos++] = 0;
 				goto add_stack_level;
 
 			case ']':
@@ -860,10 +860,11 @@ add_stack_level:
 
 		ctx->st[ctx->sp].p = (char)ctx->pst[ctx->pst_sp].ppos;
 		ctx->st[ctx->sp].i = (char)ctx->ipos;
-		if (++ctx->sp == LWS_ARRAY_SIZE(ctx->st)) {
+		if (ctx->sp + 1 >= (int)LWS_ARRAY_SIZE(ctx->st)) {
 			ret = LEJP_REJECT_STACK_OVERFLOW;
 			goto reject;
 		}
+		ctx->sp++;
 		ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 		ctx->st[ctx->sp].s = (char)c;
 		ctx->st[ctx->sp].b = 0;
@@ -1009,4 +1010,3 @@ lejp_string_unify_part(struct lejp_ctx *ctx, struct lwsac **ac, char reason)
 
 	return 0;
 }
-
