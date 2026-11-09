@@ -1195,9 +1195,9 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 				wsi->redirected_to_get = 1;
 				wsi->http.ah->frags[wsi->http.ah->frag_index[
 					_WSI_TOKEN_CLIENT_METHOD]].len = 3;
+				if (wsi->stash)
+					wsi->stash->cis[CIS_METHOD] = "GET";
 			}
-        		if (wsi->stash)
-                		wsi->stash->cis[CIS_METHOD] = "GET";
 
 			mp = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_URI);
 			ml = lws_hdr_total_length(wsi, _WSI_TOKEN_CLIENT_URI);
